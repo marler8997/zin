@@ -1,0 +1,1 @@
+StaticWindowId: type = enum {},

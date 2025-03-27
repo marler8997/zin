@@ -1,0 +1,28 @@
+.{
+    .name = .zin,
+    .version = "0.0.0",
+    .fingerprint = 0xb812a825c703b45b, // Changing this has security and trust implications.
+    .minimum_zig_version = "0.14.0",
+    .dependencies = .{
+        .win32 = .{
+            .url = "git+https://github.com/marlersoft/zigwin32#d21b419d808215e1f82605fdaddc49750bfa3bca",
+            .hash = "zigwin32-25.0.28-preview-AAAAAI0J-wP-8_KKo4Yjr33XLhVhlJmeagGUedByaOnX",
+        },
+        .x11 = .{
+            .url = "git+https://github.com/marler8997/zigx#a6f05bb5a6eb0ada9b631e9c29793228078781f1",
+            .hash = "x11-0.0.0-yWuw5twbCQB-v7vYIBEN25QtSZWkrybpvBjd7781RQiB",
+            .lazy = true,
+        },
+        .objc = .{
+            .url = "git+https://github.com/mitchellh/zig-objc#3ab0d37c7d6b933d6ded1b3a35b6b60f05590a98",
+            .hash = "zig_objc-0.0.0-Ir_Sp3TyAADEVRTxXlScq3t_uKAM91MYNerZkHfbD0yt",
+            .lazy = true,
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "res",
+    },
+}
