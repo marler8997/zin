@@ -1,6 +1,6 @@
 const std = @import("std");
 const zin = @import("zin.zig");
-const win32 = @import("win32").everything;
+pub const win32 = @import("win32").everything;
 const WINAPI = std.os.windows.WINAPI;
 const windowmsg = @import("windowmsg.zig");
 
@@ -146,6 +146,11 @@ const global = struct {
 pub fn staticWindow(comptime window_id: zin.StaticWindowId) type {
     return struct {
         const Self = @This();
+
+        pub fn hwnd() win32.HWND {
+            return global.static_windows[@intFromEnum(window_id)].?.asHwnd();
+        }
+
         pub fn registerClass(comptime def: zin.WindowClassDefinition(.{ .static = window_id })) void {
             std.debug.assert(global.static_classes[@intFromEnum(window_id)] == null);
             global.static_classes[@intFromEnum(window_id)] = registerWindowClass(.{ .static = window_id }, def);

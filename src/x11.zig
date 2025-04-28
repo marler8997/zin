@@ -3,9 +3,9 @@ const std = @import("std");
 const zin = @import("zin.zig");
 
 const x11 = @import("x11");
-const win32 = switch (builtin.os.tag) {
+pub const win32 = switch (builtin.os.tag) {
     .windows => @import("win32").everything,
-    else => @compileError("can't use win32 on non-windows OS"),
+    else => struct {},
 };
 
 const log = std.log.scoped(.x11);
