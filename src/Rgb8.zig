@@ -4,6 +4,10 @@ r: u8,
 g: u8,
 b: u8,
 
+pub fn shade(s: u8) Rgb8 {
+    return .{ .r = s, .g = s, .b = s };
+}
+
 pub fn eql(self: Rgb8, other: Rgb8) bool {
     return self.r == other.r and self.g == other.g and self.b == other.b;
 }
