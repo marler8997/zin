@@ -535,7 +535,7 @@ pub const VirtualKey = enum {
 };
 pub const Coord = i16;
 
-fn mouseButtonFromMsg(detail: u8) zin.MouseButton {
+fn mouseButtonFromMsg(detail: u8) zin.MouseButtonId {
     return switch (detail) {
         1 => .left,
         2 => .middle,

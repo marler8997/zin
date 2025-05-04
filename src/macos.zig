@@ -364,6 +364,15 @@ fn ZinView(
 
             if (config.data().mouse_events) {
                 if (!try class.addMethod("mouseMoved:", mouseMoved)) @panic("addMethod mouseMoved failed");
+                if (!try class.addMethod("mouseDragged:", mouseDragged)) @panic("addMethod mouseDragged failed");
+                if (!try class.addMethod("rightMouseDragged:", rightMouseDragged)) @panic("addMethod rightMouseDragged failed");
+                if (!try class.addMethod("otherMouseDragged:", otherMouseDragged)) @panic("addMethod otherMouseDragged failed");
+                if (!try class.addMethod("mouseDown:", mouseDown)) @panic("addMethod mouseDown failed");
+                if (!try class.addMethod("mouseUp:", mouseUp)) @panic("addMethod mouseUp failed");
+                if (!try class.addMethod("rightMouseDown:", rightMouseDown)) @panic("addMethod rightMouseDown failed");
+                if (!try class.addMethod("rightMouseUp:", rightMouseUp)) @panic("addMethod rightMouseUp failed");
+                if (!try class.addMethod("otherMouseDown:", otherMouseDown)) @panic("addMethod otherMouseDown failed");
+                if (!try class.addMethod("otherMouseUp:", otherMouseUp)) @panic("addMethod otherMouseUp failed");
 
                 if (!try class.addMethod("cursorUpdate:", cursorUpdate)) @panic("addMethod cursorUpdate failed");
                 if (!try class.addMethod("resetCursorRects", resetCursorRects)) @panic("addMethod resetCursorRects failed");
@@ -432,6 +441,7 @@ fn ZinView(
                 });
                 defer tracking_area.release();
                 self.obj.msgSend(void, "addTrackingArea:", .{tracking_area});
+                _ = w.obj.msgSend(void, "setAcceptsMouseMovedEvents:", .{true});
             }
         }
         fn windowShouldClose(object_id: objc.c.id, sel: objc.c.SEL, sender: objc.c.id) callconv(.C) bool {
@@ -565,20 +575,79 @@ fn ZinView(
             });
         }
 
-        fn mouseMoved(object_id: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.C) void {
-            const self: Self = .{ .obj = .{ .value = object_id } };
-            const event = objc.Object{ .value = event_id };
+        fn mouseEvent(self: Self, event: objc.Object, button: ?zin.MouseButtonState) void {
             const client_size = self.any().getClientSize();
             const location = self.getEventLoc(event, client_size.y);
             switch (config) {
                 .static => classdef.callback(.{ .mouse = .{
-                    .button = null,
                     .position = .{
                         .x = location.x,
                         .y = location.y,
                     },
+                    .button = button,
                 } }),
                 .dynamic => @panic("todo"),
+            }
+        }
+        fn mouseMoved(object_id: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.C) void {
+            const self: Self = .{ .obj = .{ .value = object_id } };
+            const event = objc.Object{ .value = event_id };
+            self.mouseEvent(event, null);
+        }
+        fn mouseDragged(object_id: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.C) void {
+            const self: Self = .{ .obj = .{ .value = object_id } };
+            const event = objc.Object{ .value = event_id };
+            // TODO: verify the left mouse is down?
+            self.mouseEvent(event, null);
+        }
+        fn rightMouseDragged(object_id: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.C) void {
+            const self: Self = .{ .obj = .{ .value = object_id } };
+            const event = objc.Object{ .value = event_id };
+            // TODO: verify the right mouse is down?
+            self.mouseEvent(event, null);
+        }
+        fn otherMouseDragged(object_id: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.C) void {
+            const self: Self = .{ .obj = .{ .value = object_id } };
+            const event = objc.Object{ .value = event_id };
+            // TODO: verify the other mouse is down?
+            self.mouseEvent(event, null);
+        }
+        fn mouseDown(object_id: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.C) void {
+            const self: Self = .{ .obj = .{ .value = object_id } };
+            const event = objc.Object{ .value = event_id };
+            self.mouseEvent(event, .{ .id = .left, .state = .down });
+        }
+        fn mouseUp(object_id: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.C) void {
+            const self: Self = .{ .obj = .{ .value = object_id } };
+            const event = objc.Object{ .value = event_id };
+            self.mouseEvent(event, .{ .id = .left, .state = .up });
+        }
+        fn rightMouseDown(object_id: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.C) void {
+            const self: Self = .{ .obj = .{ .value = object_id } };
+            const event = objc.Object{ .value = event_id };
+            self.mouseEvent(event, .{ .id = .right, .state = .down });
+        }
+        fn rightMouseUp(object_id: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.C) void {
+            const self: Self = .{ .obj = .{ .value = object_id } };
+            const event = objc.Object{ .value = event_id };
+            self.mouseEvent(event, .{ .id = .right, .state = .up });
+        }
+        fn otherMouseDown(object_id: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.C) void {
+            const self: Self = .{ .obj = .{ .value = object_id } };
+            const event = objc.Object{ .value = event_id };
+            // Get button number to check if it's middle button (usually 2)
+            const buttonNumber = event.msgSend(c_int, "buttonNumber", .{});
+            if (buttonNumber == 2) {
+                self.mouseEvent(event, .{ .id = .middle, .state = .down });
+            }
+        }
+        fn otherMouseUp(object_id: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.C) void {
+            const self: Self = .{ .obj = .{ .value = object_id } };
+            const event = objc.Object{ .value = event_id };
+            // Get button number to check if it's middle button (usually 2)
+            const buttonNumber = event.msgSend(c_int, "buttonNumber", .{});
+            if (buttonNumber == 2) {
+                self.mouseEvent(event, .{ .id = .middle, .state = .up });
             }
         }
     };

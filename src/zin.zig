@@ -130,13 +130,14 @@ pub const XY = struct {
     y: i32,
 };
 
-pub const MouseButton = enum { left, right, middle };
+pub const MouseButtonId = enum { left, right, middle };
+pub const MouseButtonState = struct {
+    id: MouseButtonId,
+    state: KeyState,
+};
 pub const Mouse = struct {
     position: XY,
-    button: ?struct {
-        id: MouseButton,
-        state: KeyState,
-    },
+    button: ?MouseButtonState,
 };
 
 const Field = struct {
