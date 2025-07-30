@@ -215,6 +215,7 @@ pub fn connect(allocator: std.mem.Allocator, options: zin.ConnectOptions) zin.Co
 pub fn disconnect(allocator: std.mem.Allocator) void {
     allocator.free(global.connection.setup.buf);
     x11.disconnect(global.connection.sock);
+    global.connection = undefined;
 }
 
 fn connectSetupAuth(
