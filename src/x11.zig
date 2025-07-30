@@ -2,7 +2,7 @@ const builtin = @import("builtin");
 const std = @import("std");
 const zin = @import("zin.zig");
 
-const x11 = @import("x11");
+pub const x11 = @import("x11");
 pub const win32 = switch (builtin.os.tag) {
     .windows => @import("win32").everything,
     else => struct {},
@@ -388,6 +388,11 @@ const global = struct {
     var static_windows: [static_window_count]StaticWindow = @splat(.{});
 };
 
+/// Access the global x11 socket, this should only be called after a successful call to connect.
+pub fn x11Socket() std.posix.socket_t {
+    return global.connection.sock;
+}
+
 fn staticCallback(comptime window_id: zin.StaticWindowId) *const fn (zin.Callback(.{ .static = window_id })) void {
     return @alignCast(@ptrCast(global.static_callbacks[@intFromEnum(window_id)].?));
 }
@@ -595,108 +600,112 @@ pub fn mainLoop() !void {
                 break;
             buf.release(msg_len);
             //buf.resetIfEmpty();
-            switch (x11.serverMsgTaggedUnion(@alignCast(data.ptr))) {
-                .err => |msg| std.debug.panic("X11 error: {}", .{msg}),
-                .reply => |msg| {
-                    log.info("todo: handle a reply message {}", .{msg});
-                    return error.TodoHandleReplyMessage;
-                },
-                .key_press => |msg| {
-                    log.info("key_press: keycode={}", .{msg.keycode});
-                },
-                .key_release => |msg| {
-                    log.info("key_release: keycode={}", .{msg.keycode});
-                },
-                .button_press => |msg| {
-                    const button_id = mouseButtonFromMsg(msg.detail);
-                    const pos: zin.XY = .{
-                        .x = @intCast(msg.event_x),
-                        .y = @intCast(msg.event_y),
-                    };
-                    if (global.connection.staticWindowFromX11Id(msg.event)) |w| switch (w) {
-                        inline else => |window_id| {
-                            const config = zin.WindowConfig{ .static = window_id };
-                            if (config.data().mouse_events) {
-                                staticCallback(window_id)(.{ .mouse = .{
-                                    .position = pos,
-                                    .button = .{ .id = button_id, .state = .down },
-                                } });
-                            }
-                        },
-                    } else @panic("todo: button_press on dynamic windows");
-                },
-                .button_release => |msg| {
-                    const button_id = mouseButtonFromMsg(msg.detail);
-                    const pos: zin.XY = .{
-                        .x = @intCast(msg.event_x),
-                        .y = @intCast(msg.event_y),
-                    };
-                    if (global.connection.staticWindowFromX11Id(msg.event)) |w| switch (w) {
-                        inline else => |window_id| {
-                            const config = zin.WindowConfig{ .static = window_id };
-                            if (config.data().mouse_events) {
-                                staticCallback(window_id)(.{ .mouse = .{
-                                    .position = pos,
-                                    .button = .{ .id = button_id, .state = .up },
-                                } });
-                            }
-                        },
-                    } else @panic("todo: button_release on dynamic windows");
-                },
-                .enter_notify => |msg| {
-                    log.info("enter_window: {}", .{msg});
-                },
-                .leave_notify => |msg| {
-                    log.info("leave_window: {}", .{msg});
-                },
-                .motion_notify => |msg| {
-                    const pos: zin.XY = .{
-                        .x = @intCast(msg.event_x),
-                        .y = @intCast(msg.event_y),
-                    };
-                    if (global.connection.staticWindowFromX11Id(msg.event)) |w| switch (w) {
-                        inline else => |window_id| {
-                            const config = zin.WindowConfig{ .static = window_id };
-                            if (config.data().mouse_events) {
-                                staticCallback(window_id)(.{ .mouse = .{ .position = pos, .button = null } });
-                            }
-                        },
-                    } else @panic("todo: motion_notify on dynamic windows");
-                },
-                .keymap_notify => |msg| {
-                    log.info("keymap_state: {}", .{msg});
-                },
-                .expose => |msg| {
-                    if (global.connection.staticWindowFromX11Id(msg.window)) |w| switch (w) {
-                        inline else => |window_id| {
-                            const config = zin.WindowConfig{ .static = window_id };
-                            staticCallback(window_id)(.{ .draw = .{
-                                .window = msg.window,
-                                .client_size = global.static_windows[@intFromEnum(window_id)].client_size,
-                                .background = if (comptime config.data().dynamic_background) config.data().background else {},
-                            } });
-                            global.static_windows[@intFromEnum(window_id)].damaged = false;
-                        },
-                    } else @panic("todo: expose on dynamic windows");
-                },
-                .mapping_notify => |msg| {
-                    log.info("mapping_notify: {}", .{msg});
-                },
-                .no_exposure => |msg| std.debug.panic("unexpected no_exposure {}", .{msg}),
-                .unhandled => |msg| {
-                    log.info("todo: server msg {}", .{msg});
-                    return error.UnhandledServerMsg;
-                },
-                .map_notify,
-                .reparent_notify,
-                .configure_notify,
-                => unreachable, // did not register for these
-            }
+            try x11HandleMessage(@alignCast(data));
         }
     }
 }
 pub fn quitMainLoop() void {
     @panic("todo");
+}
+
+pub fn x11HandleMessage(msg_buf: []align(4) u8) !void {
+    switch (x11.serverMsgTaggedUnion(msg_buf.ptr)) {
+        .err => |msg| std.debug.panic("X11 error: {}", .{msg}),
+        .reply => |msg| {
+            log.info("todo: handle a reply message {}", .{msg});
+            return error.TodoHandleReplyMessage;
+        },
+        .key_press => |msg| {
+            log.info("key_press: keycode={}", .{msg.keycode});
+        },
+        .key_release => |msg| {
+            log.info("key_release: keycode={}", .{msg.keycode});
+        },
+        .button_press => |msg| {
+            const button_id = mouseButtonFromMsg(msg.detail);
+            const pos: zin.XY = .{
+                .x = @intCast(msg.event_x),
+                .y = @intCast(msg.event_y),
+            };
+            if (global.connection.staticWindowFromX11Id(msg.event)) |w| switch (w) {
+                inline else => |window_id| {
+                    const config = zin.WindowConfig{ .static = window_id };
+                    if (config.data().mouse_events) {
+                        staticCallback(window_id)(.{ .mouse = .{
+                            .position = pos,
+                            .button = .{ .id = button_id, .state = .down },
+                        } });
+                    }
+                },
+            } else @panic("todo: button_press on dynamic windows");
+        },
+        .button_release => |msg| {
+            const button_id = mouseButtonFromMsg(msg.detail);
+            const pos: zin.XY = .{
+                .x = @intCast(msg.event_x),
+                .y = @intCast(msg.event_y),
+            };
+            if (global.connection.staticWindowFromX11Id(msg.event)) |w| switch (w) {
+                inline else => |window_id| {
+                    const config = zin.WindowConfig{ .static = window_id };
+                    if (config.data().mouse_events) {
+                        staticCallback(window_id)(.{ .mouse = .{
+                            .position = pos,
+                            .button = .{ .id = button_id, .state = .up },
+                        } });
+                    }
+                },
+            } else @panic("todo: button_release on dynamic windows");
+        },
+        .enter_notify => |msg| {
+            log.info("enter_window: {}", .{msg});
+        },
+        .leave_notify => |msg| {
+            log.info("leave_window: {}", .{msg});
+        },
+        .motion_notify => |msg| {
+            const pos: zin.XY = .{
+                .x = @intCast(msg.event_x),
+                .y = @intCast(msg.event_y),
+            };
+            if (global.connection.staticWindowFromX11Id(msg.event)) |w| switch (w) {
+                inline else => |window_id| {
+                    const config = zin.WindowConfig{ .static = window_id };
+                    if (config.data().mouse_events) {
+                        staticCallback(window_id)(.{ .mouse = .{ .position = pos, .button = null } });
+                    }
+                },
+            } else @panic("todo: motion_notify on dynamic windows");
+        },
+        .keymap_notify => |msg| {
+            log.info("keymap_state: {}", .{msg});
+        },
+        .expose => |msg| {
+            if (global.connection.staticWindowFromX11Id(msg.window)) |w| switch (w) {
+                inline else => |window_id| {
+                    const config = zin.WindowConfig{ .static = window_id };
+                    staticCallback(window_id)(.{ .draw = .{
+                        .window = msg.window,
+                        .client_size = global.static_windows[@intFromEnum(window_id)].client_size,
+                        .background = if (comptime config.data().dynamic_background) config.data().background else {},
+                    } });
+                    global.static_windows[@intFromEnum(window_id)].damaged = false;
+                },
+            } else @panic("todo: expose on dynamic windows");
+        },
+        .mapping_notify => |msg| {
+            log.info("mapping_notify: {}", .{msg});
+        },
+        .no_exposure => |msg| std.debug.panic("unexpected no_exposure {}", .{msg}),
+        .unhandled => |msg| {
+            log.info("todo: server msg {}", .{msg});
+            return error.UnhandledServerMsg;
+        },
+        .map_notify,
+        .reparent_notify,
+        .configure_notify,
+        => unreachable, // did not register for these
+    }
 }
 
 fn giveup(what: []const u8, e: anyerror) noreturn {
