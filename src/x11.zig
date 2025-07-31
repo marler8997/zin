@@ -432,9 +432,15 @@ pub fn staticWindow(window_id: zin.StaticWindowId) type {
             global.static_windows[@intFromEnum(window_id)].client_size = size;
         }
         pub fn destroy() void {
-            var msg: [x11.destroy_window.len]u8 = undefined;
-            x11.destroy_window.serialize(&msg, global.connection.staticWindowId(window_id));
-            global.connection.sendOneOrPanic(&msg);
+            var msg_pair: [x11.free_gc.len + x11.destroy_window.len]u8 = undefined;
+            x11.free_gc.serialize(msg_pair[0..x11.free_gc.len], gcFromWindow(global.connection.staticWindowId(window_id)));
+            x11.destroy_window.serialize(msg_pair[x11.free_gc.len..], global.connection.staticWindowId(window_id));
+            // TODO: handle this error somehow, probably by modifying global
+            //       state to invalidate the connection or something
+            global.connection.sendMultiple(2, &msg_pair) catch |e| std.debug.panic(
+                "send over X11 socket failed with {s}",
+                .{@errorName(e)},
+            );
         }
         pub fn getClientSize() zin.XY {
             return global.static_windows[@intFromEnum(window_id)].client_size;
