@@ -192,7 +192,12 @@ pub fn connect(allocator: std.mem.Allocator, options: zin.ConnectOptions) zin.Co
 
     const fixed = connect_setup.fixed();
     inline for (@typeInfo(@TypeOf(fixed.*)).@"struct".fields) |field| {
-        log.debug("{s}: {any}", .{ field.name, @field(fixed, field.name) });
+        switch (field.type) {
+            u8, u16, u32 => log.debug("{s}: {any}", .{ field.name, @field(fixed, field.name) }),
+            x11.ResourceBase => log.debug("{s}: {d}", .{ field.name, @intFromEnum(@field(fixed, field.name)) }),
+            x11.NonExhaustive(x11.ImageByteOrder) => log.debug("{s}: {s}", .{ field.name, @tagName(@field(fixed, field.name)) }),
+            else => @compileError("log connect setup type '" ++ @typeName(field.type) ++ "' is not implemented"),
+        }
     }
     log.debug("vendor: {s}", .{connect_setup.getVendorSlice(fixed.vendor_len) catch |e| switch (e) {
         error.XMalformedReply_VendorLenTooBig => @panic("X server malformed reply (vendor len too big)"),
