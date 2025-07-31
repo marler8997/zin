@@ -561,6 +561,30 @@ fn mouseButtonFromMsg(detail: u8) zin.MouseButtonId {
     };
 }
 
+pub fn x11UpdateWindows() usize {
+    var update_count: usize = 0;
+
+    for (&global.static_windows, 0..) |*window, static_window_id_raw| {
+        if (window.damaged) {
+            const static_window_id: zin.StaticWindowId = @enumFromInt(static_window_id_raw);
+            switch (static_window_id) {
+                inline else => |window_id| {
+                    const config = zin.WindowConfig{ .static = window_id };
+                    staticCallback(window_id)(.{ .draw = .{
+                        .window = global.connection.staticWindowId(static_window_id),
+                        .client_size = global.static_windows[@intFromEnum(window_id)].client_size,
+                        .background = if (comptime config.data().dynamic_background) config.data().background else {},
+                    } });
+                },
+            }
+            window.damaged = false;
+            update_count += 1;
+        }
+    }
+
+    return update_count;
+}
+
 pub fn mainLoop() !void {
     const double_buf = try x11.DoubleBuffer.init(
         std.mem.alignForward(usize, 1000, std.heap.pageSize()),
@@ -571,22 +595,7 @@ pub fn mainLoop() !void {
     var buf = double_buf.contiguousReadBuffer();
 
     while (true) {
-        for (&global.static_windows, 0..) |*window, static_window_id_raw| {
-            if (window.damaged) {
-                const static_window_id: zin.StaticWindowId = @enumFromInt(static_window_id_raw);
-                switch (static_window_id) {
-                    inline else => |window_id| {
-                        const config = zin.WindowConfig{ .static = window_id };
-                        staticCallback(window_id)(.{ .draw = .{
-                            .window = global.connection.staticWindowId(static_window_id),
-                            .client_size = global.static_windows[@intFromEnum(window_id)].client_size,
-                            .background = if (comptime config.data().dynamic_background) config.data().background else {},
-                        } });
-                    },
-                }
-                window.damaged = false;
-            }
-        }
+        _ = x11UpdateWindows();
 
         {
             const recv_buf = buf.nextReadBuffer();
