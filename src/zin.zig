@@ -291,3 +291,56 @@ pub const Rect = struct {
         return p.x >= self.left and p.x < self.right and p.y >= self.top and p.y < self.bottom;
     }
 };
+
+/// Helper for managing mouse targets and button states
+pub fn MouseState(comptime MouseTarget: type, comptime opt: struct {
+    left: bool,
+    right: bool,
+    middle: bool,
+}) type {
+    return struct {
+        maybe_interaction: ?TargetInteraction = null,
+
+        pub const Buttons = struct {
+            left: if (opt.left) KeyState else void = if (opt.left) .up else {},
+            right: if (opt.right) KeyState else void = if (opt.right) .up else {},
+            middle: if (opt.middle) KeyState else void = if (opt.middle) .up else {},
+        };
+        const TargetInteraction = struct {
+            target: MouseTarget,
+            buttons: Buttons = .{},
+        };
+
+        const Self = @This();
+
+        pub fn getLeft(state: *const Self) KeyState {
+            const interaction = &(state.maybe_interaction orelse return .up);
+            return interaction.left;
+        }
+        pub fn getTarget(state: *const Self) ?MouseTarget {
+            const interaction = &(state.maybe_interaction orelse return null);
+            return interaction.target;
+        }
+
+        /// returns true if target has changed
+        pub fn updateTarget(state: *Self, maybe_target: ?MouseTarget) bool {
+            if (maybe_target) |target| {
+                if (state.maybe_interaction) |*interaction| {
+                    if (interaction.target == target) return false; // no update
+                }
+                state.maybe_interaction = .{ .target = target };
+                return true; // updated
+            }
+            if (null == state.maybe_interaction) return false; // no update
+            state.maybe_interaction = null;
+            return true; // updated
+        }
+
+        pub fn updateLeft(state: *Self, key_state: KeyState) bool {
+            const interaction = &(state.maybe_interaction orelse return false);
+            if (interaction.buttons.left == key_state) return false;
+            interaction.buttons.left = key_state;
+            return true;
+        }
+    };
+}
