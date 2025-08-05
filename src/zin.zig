@@ -252,7 +252,8 @@ pub const WindowSizeInit = union(enum) {
 };
 pub const CreateWindowOptions = struct {
     title: [:0]const u8,
-    size: WindowSizeInit = .default,
+    size: WindowSizeInit,
+    pos: ?XY,
 };
 pub const CreateWindowError = error{
     BrokenPipe,

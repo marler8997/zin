@@ -250,14 +250,18 @@ fn createWindow(class: WindowClass, opt: *const zin.CreateWindowOptions) zin.Cre
             .window => |s| s,
         };
     };
+    const create_pos: zin.XY = if (opt.pos) |pos|
+        .{ .x = pos.x, .y = pos.y }
+    else
+        .{ .x = win32.CW_USEDEFAULT, .y = win32.CW_USEDEFAULT };
 
     const hwnd = win32.CreateWindowExW(
         style_ex,
         @ptrFromInt(class.atom),
         @ptrCast(&title_buf),
         style,
-        win32.CW_USEDEFAULT,
-        win32.CW_USEDEFAULT,
+        create_pos.x,
+        create_pos.y,
         create_size.x,
         create_size.y,
         null,

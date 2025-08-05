@@ -65,6 +65,7 @@ pub fn main() !void {
     try zin.staticWindow(.main).create(.{
         .title = "Hello Example",
         .size = .{ .client = .{ .x = 300, .y = 200 } },
+        .pos = null,
     });
     // TODO: not working for x11 yet, closing the window
     //       seems to close the entire X11 connection right now?
@@ -117,6 +118,7 @@ fn callback(cb: zin.Callback(.{ .static = .main })) void {
                 const w = zin.createDynamicWindow(global.class_extra.?, .{
                     .title = "Extra Window!",
                     .size = .{ .window = .{ .x = 200, .y = 150 } },
+                    .pos = null,
                 }) catch |e| std.debug.panic("createWindow failed with {s}", .{@errorName(e)});
                 // TODO: place the new window on top of the current
                 //       one but don't have it take the input focus
