@@ -72,6 +72,10 @@ fn addExample(
         }),
         .win32_manifest = b.path("res/win32dpiaware.manifest"),
     });
+    exe.addWin32ResourceFile(.{
+        .file = b.path("examples/example.rc"),
+    });
+
     const install = b.addInstallArtifact(exe, .{});
     examples_step.dependOn(&install.step);
 

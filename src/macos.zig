@@ -83,7 +83,11 @@ pub fn staticWindow(window_id: zin.StaticWindowId) type {
     return struct {
         const Self = @This();
 
-        pub fn registerClass(comptime def: zin.WindowClassDefinition(.{ .static = window_id })) void {
+        pub fn registerClass(
+            comptime def: zin.WindowClassDefinition(.{ .static = window_id }),
+            runtime_config: zin.WindowClassRuntimeConfig,
+        ) void {
+            _ = runtime_config;
             std.debug.assert(global.static_classes[@intFromEnum(window_id)] == null);
             const view = ZinView(.{ .static = window_id }, def).create();
             global.static_classes[@intFromEnum(window_id)] = view.any();
@@ -143,8 +147,10 @@ pub const WindowClass = struct {};
 pub fn registerDynamicWindowClass(
     comptime config: zin.WindowConfigData,
     comptime def: zin.WindowClassDefinition(.{ .dynamic = config }),
+    runtime_config: zin.WindowClassRuntimeConfig,
 ) WindowClass {
     _ = def;
+    _ = runtime_config;
     @panic("todo");
 }
 

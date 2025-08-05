@@ -62,15 +62,18 @@ pub const WindowClass = struct {
 pub fn registerDynamicWindowClass(
     comptime config: zin.WindowConfigData,
     comptime def: zin.WindowClassDefinition(.{ .dynamic = config }),
+    runtime_config: zin.WindowClassRuntimeConfig,
 ) WindowClass {
-    return registerWindowClass(.{ .dynamic = config }, def);
+    return registerWindowClass(.{ .dynamic = config }, def, runtime_config);
 }
 
 fn registerWindowClass(
     comptime window_config: zin.WindowConfig,
     comptime def: zin.WindowClassDefinition(window_config),
+    runtime_config: zin.WindowClassRuntimeConfig,
 ) WindowClass {
-    var c: win32.WNDCLASSW = .{
+    var c: win32.WNDCLASSEXW = .{
+        .cbSize = @sizeOf(win32.WNDCLASSEXW),
         // TODO: create a option to enable/disable double clicks,
         //       enabling them will change how window events are sent
         // .DBLCLKS = 1
@@ -79,13 +82,14 @@ fn registerWindowClass(
         .cbClsExtra = 0,
         .cbWndExtra = 0,
         .hInstance = win32.GetModuleHandleW(null),
-        .hIcon = null,
+        .hIcon = runtime_config.win32_icon_large.handle,
+        .hIconSm = runtime_config.win32_icon_small.handle,
         .hCursor = win32.LoadCursorW(null, win32.IDC_ARROW),
         .hbrBackground = null,
         .lpszMenuName = null,
         .lpszClassName = def.win32_name,
     };
-    const atom = win32.RegisterClassW(&c);
+    const atom = win32.RegisterClassExW(&c);
     if (atom == 0) win32.panicWin32(
         "RegisterClass",
         win32.GetLastError(),
@@ -151,9 +155,12 @@ pub fn staticWindow(comptime window_id: zin.StaticWindowId) type {
             return global.static_windows[@intFromEnum(window_id)].?.asHwnd();
         }
 
-        pub fn registerClass(comptime def: zin.WindowClassDefinition(.{ .static = window_id })) void {
+        pub fn registerClass(
+            comptime def: zin.WindowClassDefinition(.{ .static = window_id }),
+            config: zin.WindowClassRuntimeConfig,
+        ) void {
             std.debug.assert(global.static_classes[@intFromEnum(window_id)] == null);
-            global.static_classes[@intFromEnum(window_id)] = registerWindowClass(.{ .static = window_id }, def);
+            global.static_classes[@intFromEnum(window_id)] = registerWindowClass(.{ .static = window_id }, def, config);
         }
         pub fn unregisterClass() void {
             global.static_classes[@intFromEnum(window_id)].?.unregister();

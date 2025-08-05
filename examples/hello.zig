@@ -1,5 +1,7 @@
+const builtin = @import("builtin");
 const std = @import("std");
 const zin = @import("zin");
+const win32 = zin.platform.win32;
 
 pub const zin_config: zin.Config = .{
     .StaticWindowId = StaticWindowId,
@@ -49,10 +51,15 @@ pub fn main() !void {
     try zin.connect(arena, .{});
     defer zin.disconnect(arena);
 
+    const icons = getIcons(96, 96);
+
     zin.staticWindow(.main).registerClass(.{
         .callback = callback,
         .win32_name = zin.L("HelloMainWindow"),
         .macos_view = "HelloView",
+    }, .{
+        .win32_icon_large = icons.large,
+        .win32_icon_small = icons.small,
     });
     defer zin.staticWindow(.main).unregisterClass();
     try zin.staticWindow(.main).create(.{
@@ -102,6 +109,9 @@ fn callback(cb: zin.Callback(.{ .static = .main })) void {
                         .callback = extraCallback,
                         .win32_name = zin.L("HelloExtraWindow"),
                         .macos_view = "HelloExtraView",
+                    }, .{
+                        .win32_icon_large = .none,
+                        .win32_icon_small = .none,
                     });
                 }
                 const w = zin.createDynamicWindow(global.class_extra.?, .{
@@ -135,4 +145,47 @@ fn extraCallback(
             d.text("Extra", 10, 10, .white);
         },
     }
+}
+
+const Icons = struct {
+    small: zin.MaybeWin32Icon,
+    large: zin.MaybeWin32Icon,
+};
+fn getIcons(dpi_x: u32, dpi_y: u32) Icons {
+    if (builtin.os.tag == .windows) {
+        const small_x = win32.GetSystemMetricsForDpi(@intFromEnum(win32.SM_CXSMICON), dpi_x);
+        const small_y = win32.GetSystemMetricsForDpi(@intFromEnum(win32.SM_CYSMICON), dpi_y);
+        const large_x = win32.GetSystemMetricsForDpi(@intFromEnum(win32.SM_CXICON), dpi_x);
+        const large_y = win32.GetSystemMetricsForDpi(@intFromEnum(win32.SM_CYICON), dpi_y);
+        std.log.info("icons small={}x{} large={}x{} at dpi {}x{}", .{
+            small_x, small_y,
+            large_x, large_y,
+            dpi_x,   dpi_y,
+        });
+        const small = win32.LoadImageW(
+            win32.GetModuleHandleW(null),
+            @ptrFromInt(1), // resource id
+            .ICON,
+            small_x,
+            small_y,
+            win32.LR_SHARED,
+        );
+        if (small == null)
+            std.debug.panic("LoadImage for small icon failed, error={}", .{win32.GetLastError()});
+        const large = win32.LoadImageW(
+            win32.GetModuleHandleW(null),
+            @ptrFromInt(1), // resource id
+            .ICON,
+            large_x,
+            large_y,
+            win32.LR_SHARED,
+        );
+        if (large == null)
+            std.debug.panic("LoadImage for large icon failed, error={}", .{win32.GetLastError()});
+        return .{
+            .small = .init(@ptrCast(small)),
+            .large = .init(@ptrCast(large)),
+        };
+    }
+    return .{ .small = .none, .large = .none };
 }

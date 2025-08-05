@@ -205,6 +205,23 @@ pub fn Callback(window_config: WindowConfig) type {
     );
 }
 
+pub const MaybeWin32Icon = struct {
+    handle: Handle,
+
+    pub const Handle = switch (builtin.os.tag) {
+        .windows => ?platform.win32.HICON,
+        else => void,
+    };
+
+    pub const none: MaybeWin32Icon = switch (builtin.os.tag) {
+        .windows => .{ .handle = null },
+        else => .{ .handle = {} },
+    };
+    pub fn init(handle: Handle) MaybeWin32Icon {
+        return .{ .handle = handle };
+    }
+};
+
 pub fn WindowClassDefinition(window_config: WindowConfig) type {
     return switch (window_config) {
         .static => struct {
@@ -220,6 +237,11 @@ pub fn WindowClassDefinition(window_config: WindowConfig) type {
         },
     };
 }
+
+pub const WindowClassRuntimeConfig = struct {
+    win32_icon_large: MaybeWin32Icon,
+    win32_icon_small: MaybeWin32Icon,
+};
 
 pub const registerDynamicWindowClass = platform.registerDynamicWindowClass;
 

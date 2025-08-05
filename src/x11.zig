@@ -331,8 +331,10 @@ pub fn connectSetup(
 pub fn registerDynamicWindowClass(
     comptime config: zin.WindowConfigData,
     comptime def: zin.WindowClassDefinition(.{ .dynamic = config }),
+    runtime_config: zin.WindowClassRuntimeConfig,
 ) WindowClass {
     _ = def;
+    _ = runtime_config;
     @panic("todo: dynamic x11 windows");
 }
 
@@ -416,7 +418,11 @@ pub fn staticWindow(window_id: zin.StaticWindowId) type {
             };
         }
 
-        pub fn registerClass(comptime def: zin.WindowClassDefinition(.{ .static = window_id })) void {
+        pub fn registerClass(
+            comptime def: zin.WindowClassDefinition(.{ .static = window_id }),
+            runtime_config: zin.WindowClassRuntimeConfig,
+        ) void {
+            _ = runtime_config;
             std.debug.assert(global.static_callbacks[@intFromEnum(window_id)] == null);
             global.static_callbacks[@intFromEnum(window_id)] = @ptrCast(def.callback);
         }
