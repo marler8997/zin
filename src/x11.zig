@@ -556,6 +556,7 @@ fn createWindow(
 pub const VirtualKey = enum {
     n,
 };
+pub const ScanCode = void;
 pub const Coord = i16;
 
 fn mouseButtonFromMsg(detail: u8) zin.MouseButtonId {

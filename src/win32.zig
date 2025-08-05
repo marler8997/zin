@@ -307,10 +307,232 @@ pub fn mainLoop() !void {
     }
 }
 
-pub const VirtualKey = enum(usize) {
+pub const VirtualKey = enum(u16) {
+    // Mouse buttons
+    left_button = @intFromEnum(win32.VK_LBUTTON),
+    right_button = @intFromEnum(win32.VK_RBUTTON),
+    cancel = @intFromEnum(win32.VK_CANCEL),
+    middle_button = @intFromEnum(win32.VK_MBUTTON),
+    xbutton1 = @intFromEnum(win32.VK_XBUTTON1),
+    xbutton2 = @intFromEnum(win32.VK_XBUTTON2),
+
+    // Basic keys
+    back = @intFromEnum(win32.VK_BACK),
+    tab = @intFromEnum(win32.VK_TAB),
+    clear = @intFromEnum(win32.VK_CLEAR),
+    @"return" = @intFromEnum(win32.VK_RETURN),
+
+    // Modifier keys
+    shift = @intFromEnum(win32.VK_SHIFT),
+    control = @intFromEnum(win32.VK_CONTROL),
+    alt = @intFromEnum(win32.VK_MENU),
+    pause = @intFromEnum(win32.VK_PAUSE),
+    caps_lock = @intFromEnum(win32.VK_CAPITAL),
+
+    // IME keys
+    kana = @intFromEnum(win32.VK_KANA),
+    ime_on = @intFromEnum(win32.VK_IME_ON),
+    junja = @intFromEnum(win32.VK_JUNJA),
+    final = @intFromEnum(win32.VK_FINAL),
+    hanja = @intFromEnum(win32.VK_HANJA),
+    ime_off = @intFromEnum(win32.VK_IME_OFF),
+
+    escape = @intFromEnum(win32.VK_ESCAPE),
+    convert = @intFromEnum(win32.VK_CONVERT),
+    nonconvert = @intFromEnum(win32.VK_NONCONVERT),
+    accept = @intFromEnum(win32.VK_ACCEPT),
+    modechange = @intFromEnum(win32.VK_MODECHANGE),
+
+    // Navigation keys
+    space = @intFromEnum(win32.VK_SPACE),
+    page_up = @intFromEnum(win32.VK_PRIOR),
+    page_down = @intFromEnum(win32.VK_NEXT),
+    end = @intFromEnum(win32.VK_END),
+    home = @intFromEnum(win32.VK_HOME),
+    left = @intFromEnum(win32.VK_LEFT),
+    up = @intFromEnum(win32.VK_UP),
+    right = @intFromEnum(win32.VK_RIGHT),
+    down = @intFromEnum(win32.VK_DOWN),
+    select = @intFromEnum(win32.VK_SELECT),
+    print = @intFromEnum(win32.VK_PRINT),
+    execute = @intFromEnum(win32.VK_EXECUTE),
+    print_screen = @intFromEnum(win32.VK_SNAPSHOT), // Print screen
+    insert = @intFromEnum(win32.VK_INSERT),
+    delete = @intFromEnum(win32.VK_DELETE),
+    help = @intFromEnum(win32.VK_HELP),
+
+    @"0" = @intFromEnum(win32.VK_0),
+    @"1" = @intFromEnum(win32.VK_1),
+    @"2" = @intFromEnum(win32.VK_2),
+    @"3" = @intFromEnum(win32.VK_3),
+    @"4" = @intFromEnum(win32.VK_4),
+    @"5" = @intFromEnum(win32.VK_5),
+    @"6" = @intFromEnum(win32.VK_6),
+    @"7" = @intFromEnum(win32.VK_7),
+    @"8" = @intFromEnum(win32.VK_8),
+    @"9" = @intFromEnum(win32.VK_9),
+
+    a = @intFromEnum(win32.VK_A),
+    b = @intFromEnum(win32.VK_B),
+    c = @intFromEnum(win32.VK_C),
+    d = @intFromEnum(win32.VK_D),
+    e = @intFromEnum(win32.VK_E),
+    f = @intFromEnum(win32.VK_F),
+    g = @intFromEnum(win32.VK_G),
+    h = @intFromEnum(win32.VK_H),
+    i = @intFromEnum(win32.VK_I),
+    j = @intFromEnum(win32.VK_J),
+    k = @intFromEnum(win32.VK_K),
+    l = @intFromEnum(win32.VK_L),
+    m = @intFromEnum(win32.VK_M),
     n = @intFromEnum(win32.VK_N),
+    o = @intFromEnum(win32.VK_O),
+    p = @intFromEnum(win32.VK_P),
+    q = @intFromEnum(win32.VK_Q),
+    r = @intFromEnum(win32.VK_R),
+    s = @intFromEnum(win32.VK_S),
+    t = @intFromEnum(win32.VK_T),
+    u = @intFromEnum(win32.VK_U),
+    v = @intFromEnum(win32.VK_V),
+    w = @intFromEnum(win32.VK_W),
+    x = @intFromEnum(win32.VK_X),
+    y = @intFromEnum(win32.VK_Y),
+    z = @intFromEnum(win32.VK_Z),
+
+    left_super = @intFromEnum(win32.VK_LWIN),
+    right_super = @intFromEnum(win32.VK_RWIN),
+    apps = @intFromEnum(win32.VK_APPS), // Application key
+    sleep = @intFromEnum(win32.VK_SLEEP),
+
+    numpad0 = @intFromEnum(win32.VK_NUMPAD0),
+    numpad1 = @intFromEnum(win32.VK_NUMPAD1),
+    numpad2 = @intFromEnum(win32.VK_NUMPAD2),
+    numpad3 = @intFromEnum(win32.VK_NUMPAD3),
+    numpad4 = @intFromEnum(win32.VK_NUMPAD4),
+    numpad5 = @intFromEnum(win32.VK_NUMPAD5),
+    numpad6 = @intFromEnum(win32.VK_NUMPAD6),
+    numpad7 = @intFromEnum(win32.VK_NUMPAD7),
+    numpad8 = @intFromEnum(win32.VK_NUMPAD8),
+    numpad9 = @intFromEnum(win32.VK_NUMPAD9),
+    multiply = @intFromEnum(win32.VK_MULTIPLY),
+    add = @intFromEnum(win32.VK_ADD),
+    separator = @intFromEnum(win32.VK_SEPARATOR),
+    subtract = @intFromEnum(win32.VK_SUBTRACT),
+    decimal = @intFromEnum(win32.VK_DECIMAL),
+    divide = @intFromEnum(win32.VK_DIVIDE),
+
+    f1 = @intFromEnum(win32.VK_F1),
+    f2 = @intFromEnum(win32.VK_F2),
+    f3 = @intFromEnum(win32.VK_F3),
+    f4 = @intFromEnum(win32.VK_F4),
+    f5 = @intFromEnum(win32.VK_F5),
+    f6 = @intFromEnum(win32.VK_F6),
+    f7 = @intFromEnum(win32.VK_F7),
+    f8 = @intFromEnum(win32.VK_F8),
+    f9 = @intFromEnum(win32.VK_F9),
+    f10 = @intFromEnum(win32.VK_F10),
+    f11 = @intFromEnum(win32.VK_F11),
+    f12 = @intFromEnum(win32.VK_F12),
+    f13 = @intFromEnum(win32.VK_F13),
+    f14 = @intFromEnum(win32.VK_F14),
+    f15 = @intFromEnum(win32.VK_F15),
+    f16 = @intFromEnum(win32.VK_F16),
+    f17 = @intFromEnum(win32.VK_F17),
+    f18 = @intFromEnum(win32.VK_F18),
+    f19 = @intFromEnum(win32.VK_F19),
+    f20 = @intFromEnum(win32.VK_F20),
+    f21 = @intFromEnum(win32.VK_F21),
+    f22 = @intFromEnum(win32.VK_F22),
+    f23 = @intFromEnum(win32.VK_F23),
+    f24 = @intFromEnum(win32.VK_F24),
+
+    numlock = @intFromEnum(win32.VK_NUMLOCK),
+    scroll = @intFromEnum(win32.VK_SCROLL),
+
+    left_shift = @intFromEnum(win32.VK_LSHIFT),
+    right_shift = @intFromEnum(win32.VK_RSHIFT),
+    left_control = @intFromEnum(win32.VK_LCONTROL),
+    right_control = @intFromEnum(win32.VK_RCONTROL),
+    left_alt = @intFromEnum(win32.VK_LMENU),
+    right_alt = @intFromEnum(win32.VK_RMENU),
+
+    browser_back = @intFromEnum(win32.VK_BROWSER_BACK),
+    browser_forward = @intFromEnum(win32.VK_BROWSER_FORWARD),
+    browser_refresh = @intFromEnum(win32.VK_BROWSER_REFRESH),
+    browser_stop = @intFromEnum(win32.VK_BROWSER_STOP),
+    browser_search = @intFromEnum(win32.VK_BROWSER_SEARCH),
+    browser_favorites = @intFromEnum(win32.VK_BROWSER_FAVORITES),
+    browser_home = @intFromEnum(win32.VK_BROWSER_HOME),
+
+    volume_mute = @intFromEnum(win32.VK_VOLUME_MUTE),
+    volume_down = @intFromEnum(win32.VK_VOLUME_DOWN),
+    volume_up = @intFromEnum(win32.VK_VOLUME_UP),
+
+    media_next_track = @intFromEnum(win32.VK_MEDIA_NEXT_TRACK),
+    media_prev_track = @intFromEnum(win32.VK_MEDIA_PREV_TRACK),
+    media_stop = @intFromEnum(win32.VK_MEDIA_STOP),
+    media_play_pause = @intFromEnum(win32.VK_MEDIA_PLAY_PAUSE),
+
+    launch_mail = @intFromEnum(win32.VK_LAUNCH_MAIL),
+    launch_media_select = @intFromEnum(win32.VK_LAUNCH_MEDIA_SELECT),
+    launch_app1 = @intFromEnum(win32.VK_LAUNCH_APP1),
+    launch_app2 = @intFromEnum(win32.VK_LAUNCH_APP2),
+
+    oem_1 = @intFromEnum(win32.VK_OEM_1), // Semicolon/Colon on US ANSI
+    oem_plus = @intFromEnum(win32.VK_OEM_PLUS), // Equals/Plus
+    oem_comma = @intFromEnum(win32.VK_OEM_COMMA), // Comma/Less Than
+    oem_minus = @intFromEnum(win32.VK_OEM_MINUS), // Dash/Underscore
+    oem_period = @intFromEnum(win32.VK_OEM_PERIOD), // Period/Greater Than
+    oem_2 = @intFromEnum(win32.VK_OEM_2), // Forward Slash/Question Mark on US ANSI
+    oem_3 = @intFromEnum(win32.VK_OEM_3), // Grave Accent/Tilde on US ANSI
+    oem_4 = @intFromEnum(win32.VK_OEM_4), // Left Brace on US ANSI
+    oem_5 = @intFromEnum(win32.VK_OEM_5), // Backslash/Pipe on US ANSI
+    oem_6 = @intFromEnum(win32.VK_OEM_6), // Right Brace on US ANSI
+    oem_7 = @intFromEnum(win32.VK_OEM_7), // Apostrophe/Double Quote on US ANSI
+    oem_8 = @intFromEnum(win32.VK_OEM_8), // Varies by keyboard
+    oem_102 = @intFromEnum(win32.VK_OEM_102), // Backslash/Pipe on European ISO
+    processkey = @intFromEnum(win32.VK_PROCESSKEY), // IME PROCESS key
+    packet = @intFromEnum(win32.VK_PACKET), // Used for Unicode characters as keystrokes
+
+    attn = @intFromEnum(win32.VK_ATTN),
+    crsel = @intFromEnum(win32.VK_CRSEL),
+    exsel = @intFromEnum(win32.VK_EXSEL),
+    ereof = @intFromEnum(win32.VK_EREOF),
+    play = @intFromEnum(win32.VK_PLAY),
+    zoom = @intFromEnum(win32.VK_ZOOM),
+    noname = @intFromEnum(win32.VK_NONAME), // Reserved
+    pa1 = @intFromEnum(win32.VK_PA1),
+    oem_clear = @intFromEnum(win32.VK_OEM_CLEAR),
+    _,
+
+    // the following are duplicates
+    pub const hangul = @intFromEnum(win32.VK_HANGUL);
+    pub const kanji = @intFromEnum(win32.VK_KANJI);
+};
+pub const ScanCode = enum(u8) {
     _,
 };
+const KeyFlags = packed struct(u32) {
+    repeat_count: u16,
+    scan_code: u8,
+    extended: bool,
+    reserved: u4,
+    context: bool,
+    previous: bool,
+    transition: bool,
+};
+fn keyFromWin32(direction: enum { up, down }, wparam: win32.WPARAM, lparam: win32.LPARAM) zin.Key {
+    const key_flags: KeyFlags = @bitCast(@as(u32, @intCast(0xffffffff & lparam)));
+    return .{
+        .kind = switch (direction) {
+            .up => .up,
+            .down => if (key_flags.previous) .down_repeat else .down,
+        },
+        .vk = @enumFromInt(@as(u16, @intCast(0xffff & wparam))),
+        .scan_code = @enumFromInt(key_flags.scan_code),
+        .win32_extended = key_flags.extended,
+    };
+}
 
 var start_time: ?u32 = null;
 fn getTime() u32 {
@@ -372,24 +594,20 @@ fn makeWndProc(
                 },
                 win32.WM_KEYDOWN => {
                     if (comptime config.data().key_events) switch (config) {
-                        .static => class.callback(
-                            .{ .key = .{ .state = .down, .vk = @enumFromInt(wparam) } },
-                        ),
+                        .static => class.callback(.{ .key = keyFromWin32(.down, wparam, lparam) }),
                         .dynamic => class.callback(
                             windowFromHwnd(hwnd),
-                            .{ .key = .{ .state = .down, .vk = @enumFromInt(wparam) } },
+                            .{ .key = keyFromWin32(.down, wparam, lparam) },
                         ),
                     };
                     return 0;
                 },
                 win32.WM_KEYUP => {
                     if (comptime config.data().key_events) switch (config) {
-                        .static => class.callback(
-                            .{ .key = .{ .state = .up, .vk = @enumFromInt(wparam) } },
-                        ),
+                        .static => class.callback(.{ .key = keyFromWin32(.up, wparam, lparam) }),
                         .dynamic => class.callback(
                             windowFromHwnd(hwnd),
-                            .{ .key = .{ .state = .up, .vk = @enumFromInt(wparam) } },
+                            .{ .key = keyFromWin32(.up, wparam, lparam) },
                         ),
                     };
                     return 0;

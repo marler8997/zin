@@ -118,11 +118,19 @@ pub const ConnectionPtr = if (platform_kind == .x11) *Connection else void;
 pub const WindowClass = platform.WindowClass;
 pub const DynamicWindow = platform.DynamicWindow;
 
+pub const VirtualKey = platform.VirtualKey;
+pub const ScanCode = platform.ScanCode;
+
 pub const KeyState = enum { up, down };
+pub const Win32ExtendedKey = switch (builtin.os.tag) {
+    .windows => bool,
+    else => void,
+};
 pub const Key = struct {
-    state: KeyState,
-    vk: platform.VirtualKey,
-    // todo: scancode
+    kind: enum { up, down, down_repeat },
+    vk: VirtualKey,
+    scan_code: ScanCode,
+    win32_extended: Win32ExtendedKey,
 };
 
 pub const XY = struct {

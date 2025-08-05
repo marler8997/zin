@@ -228,6 +228,7 @@ pub const VirtualKey = enum(usize) {
     n = 0,
     _,
 };
+pub const ScanCode = void;
 
 pub fn Draw(window_config: zin.WindowConfig) type {
     _ = window_config;
