@@ -91,14 +91,14 @@ pub const Connection = struct {
         return null;
     }
 
-    fn reader(self: *const Connection) SocketReader {
+    pub fn reader(self: *const Connection) SocketReader {
         return .{ .context = self.sock };
     }
-    fn sendOne(self: *Connection, data: []const u8) SendError!void {
+    pub fn sendOne(self: *Connection, data: []const u8) SendError!void {
         try this.sendNoSequencing(self.sock, data);
         self.sequence +%= 1;
     }
-    fn sendMultiple(self: *Connection, message_count: u16, data: []const u8) SendError!void {
+    pub fn sendMultiple(self: *Connection, message_count: u16, data: []const u8) SendError!void {
         try this.sendNoSequencing(self.sock, data);
         self.sequence +%= message_count;
     }
@@ -390,8 +390,8 @@ const StaticWindow = struct {
     client_size: zin.XY = .{ .x = 0, .y = 0 },
 };
 
-const global = struct {
-    var connection: Connection = undefined;
+pub const global = struct {
+    pub var connection: Connection = undefined;
     var static_callbacks: [static_window_count]?*const anyopaque = @splat(null);
     var static_windows: [static_window_count]StaticWindow = @splat(.{});
 };
@@ -471,7 +471,7 @@ pub fn staticWindow(window_id: zin.StaticWindowId) type {
     };
 }
 
-fn gcFromWindow(id: x11.Window) x11.GraphicsContext {
+pub fn gcFromWindow(id: x11.Window) x11.GraphicsContext {
     return @enumFromInt(@intFromEnum(id) + 1);
 }
 

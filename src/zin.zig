@@ -249,6 +249,11 @@ pub fn WindowClassDefinition(window_config: WindowConfig) type {
 pub const WindowClassRuntimeConfig = struct {
     win32_icon_large: MaybeWin32Icon,
     win32_icon_small: MaybeWin32Icon,
+
+    pub const win32_no_icons: WindowClassRuntimeConfig = .{
+        .win32_icon_large = .none,
+        .win32_icon_small = .none,
+    };
 };
 
 pub const registerDynamicWindowClass = platform.registerDynamicWindowClass;
