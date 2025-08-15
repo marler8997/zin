@@ -42,6 +42,8 @@ pub fn enforceDpiAware() zin.DpiAwarenessError!void {
     }
 }
 
+pub const min_timer_id_int = 1;
+
 pub const WindowConfig = struct {
     render: union(enum) {
         gdi: struct {
@@ -190,8 +192,11 @@ pub fn staticWindow(comptime window_id: zin.StaticWindowId) type {
         pub fn invalidate() void {
             global.static_windows[@intFromEnum(window_id)].?.invalidate();
         }
-        pub fn startTimer(id: usize, millis: u32) void {
-            global.static_windows[@intFromEnum(window_id)].?.startTimer(id, millis);
+        pub fn startTimer(id: window_id.getConfig().TimerId(), millis: u32) void {
+            global.static_windows[@intFromEnum(window_id)].?.startTimer(
+                zin.intFromTimerId(usize, window_id.getConfig().TimerId(), id),
+                millis,
+            );
         }
     };
 }
@@ -586,10 +591,24 @@ fn makeWndProc(
                     return 0;
                 },
                 win32.WM_TIMER => {
-                    if (comptime config.data().timers) switch (config) {
-                        .static => class.callback(.{ .timer = wparam }),
-                        .dynamic => class.callback(windowFromHwnd(hwnd), .{ .timer = wparam }),
-                    };
+                    switch (config.data().timers) {
+                        .none => {},
+                        .one => {
+                            std.debug.assert(wparam == 1);
+                            switch (config) {
+                                .static => class.callback(.{ .timer = {} }),
+                                .dynamic => class.callback(windowFromHwnd(hwnd), .{ .timer = {} }),
+                            }
+                        },
+                        .type => |TimerId| switch (config) {
+                            .static => class.callback(.{
+                                .timer = zin.timerIdFromWparam(TimerId, wparam),
+                            }),
+                            .dynamic => class.callback(windowFromHwnd(hwnd), .{
+                                .timer = zin.timerIdFromWparam(TimerId, wparam),
+                            }),
+                        },
+                    }
                     return 0;
                 },
                 win32.WM_KEYDOWN => {

@@ -71,6 +71,8 @@ pub fn panic(panic_opt: zin.PanicOptions) type {
     }.panic);
 }
 
+pub const min_timer_id_int = 0;
+
 const static_window_count = @typeInfo(zin.StaticWindowId).@"enum".fields.len;
 const global = struct {
     var static_classes: [static_window_count]?AnyZinView = @splat(null);
@@ -122,15 +124,16 @@ pub fn staticWindow(window_id: zin.StaticWindowId) type {
             const view = global.static_windows[@intFromEnum(window_id)].?.contentView();
             return (AnyZinView{ .obj = view }).setNeedsDisplay(true);
         }
-        pub fn startTimer(id: usize, millis: u32) void {
+        pub fn startTimer(id: window_id.getConfig().TimerId(), millis: u32) void {
             const view = global.static_windows[@intFromEnum(window_id)].?.contentView();
             const seconds = @as(f64, @floatFromInt(millis)) / 1000.0;
+            const id_int = zin.intFromTimerId(u32, window_id.getConfig().TimerId(), id);
             const timer = getClass("NSTimer").msgSend(objc.Object, "scheduledTimerWithTimeInterval:target:selector:userInfo:repeats:", .{
                 seconds,
                 view,
                 objc.sel("handleTimer:"),
                 // TODO: should we release this number?
-                NSNumber.numberWithUnsignedLong(id).obj, // Store timer ID in userInfo
+                NSNumber.numberWithUnsignedLong(id_int).obj, // Store timer ID in userInfo
                 true, // repeating
             });
             // Ensure the timer is retained and added to the current run loop
@@ -385,8 +388,11 @@ fn ZinView(
                 if (!try class.addMethod("resetCursorRects", resetCursorRects)) @panic("addMethod resetCursorRects failed");
             }
 
-            if (config.data().timers) {
-                if (!try class.addMethod("handleTimer:", handleTimer)) @panic("addMethod handleTimer failed");
+            switch (config.data().timers) {
+                .none => {},
+                .one, .type => {
+                    if (!try class.addMethod("handleTimer:", handleTimer)) @panic("addMethod handleTimer failed");
+                },
             }
 
             objc.registerClassPair(class);
@@ -472,17 +478,20 @@ fn ZinView(
         fn handleTimer(object_id: objc.c.id, sel: objc.c.SEL, timer_obj_id: objc.c.id) callconv(.C) void {
             _ = object_id;
             _ = sel;
-            if (comptime config.data().timers) {
-                const timer_obj = objc.Object{ .value = timer_obj_id };
-                const user_info = timer_obj.msgSend(objc.Object, "userInfo", .{});
-                const timer_id = (NSNumber{ .obj = user_info }).unsignedLongValue();
-                // Invalidate the timer after it's fired to avoid memory leaks
-                // _ = timer_obj.msgSend(void, "invalidate", .{});
-                switch (config) {
-                    .static => classdef.callback(.{ .timer = timer_id }),
-                    .dynamic => @panic("todo"), // Implement for dynamic windows
-                }
-            } else unreachable;
+
+            switch (config.data().timers) {
+                .none => unreachable,
+                .one, .type => {},
+            }
+            const timer_obj = objc.Object{ .value = timer_obj_id };
+            const user_info = timer_obj.msgSend(objc.Object, "userInfo", .{});
+            const timer_id = (NSNumber{ .obj = user_info }).unsignedLongValue();
+            // Invalidate the timer after it's fired to avoid memory leaks
+            // _ = timer_obj.msgSend(void, "invalidate", .{});
+            switch (config) {
+                .static => classdef.callback(.{ .timer = zin.timerIdFromInt(config.data().TimerId(), timer_id) }),
+                .dynamic => @panic("todo"), // Implement for dynamic windows
+            }
         }
 
         fn drawRect(object_id: objc.c.id, _: objc.c.SEL, rect: NSRect) callconv(.C) void {

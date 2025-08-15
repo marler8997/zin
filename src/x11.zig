@@ -520,7 +520,7 @@ pub fn staticWindow(window_id: zin.StaticWindowId) type {
         pub fn invalidate() void {
             global.static_windows[@intFromEnum(window_id)].damaged = true;
         }
-        pub fn startTimer(id: usize, millis: u32) void {
+        pub fn startTimer(id: window_id.getConfig().TimerId(), millis: u32) void {
             _ = id;
             _ = millis;
             log.warn("TODO: implement timers for x11", .{});
