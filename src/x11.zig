@@ -70,6 +70,59 @@ fn sendNoSequencing(sock: std.posix.socket_t, data: []const u8) SendError!void {
 
 const fixed_ids_per_window = 2; // 1 for the window and 1 for the graphics context
 
+fn Extension(comptime name: []const u8) type {
+    return union(enum) {
+        not_queried,
+        query_sent: struct { sequence: u16 },
+        unsupported,
+        supported: struct { opcode: u8, first_error: u8 },
+
+        const Self = @This();
+        pub fn startQuery(self: *Self, connection: *Connection) !void {
+            switch (self.*) {
+                .not_queried => {
+                    const ext_name = comptime x11.Slice(u16, [*]const u8).initComptime(name);
+                    var msg: [x11.query_extension.getLen(x11.dbe.name.len)]u8 = undefined;
+                    x11.query_extension.serialize(&msg, ext_name);
+                    try connection.sendOne(&msg);
+                    self.* = .{ .query_sent = .{ .sequence = connection.sequence } };
+                },
+                .query_sent, .unsupported, .supported => {},
+            }
+        }
+        pub fn onReply(self: *Self, reply_base: *x11.ServerMsg.Reply) error{MalformedX11Reply}!enum { not_handled, newly_unsupported, newly_supported } {
+            if (reply_base.sequence != switch (self.*) {
+                .query_sent => |query| query.sequence,
+                .not_queried, .unsupported, .supported => return .not_handled,
+            }) return .not_handled;
+
+            const reply: *x11.ServerMsg.QueryExtension = @ptrCast(reply_base);
+            if (reply.present == 0) {
+                log.info("extension '{}': not present", .{x11.dbe.name});
+                global.connection.dbe = .unsupported;
+                return .newly_unsupported;
+            }
+            if (reply.present != 1) {
+                global.connection.dbe = .unsupported;
+                log.err(
+                    "unexpected extension '{}' reply present value {}",
+                    .{ x11.dbe.name, reply.present },
+                );
+                return error.MalformedX11Reply;
+            }
+            log.info(
+                "extension '{}': opcode={} base_error_code={}",
+                .{ x11.dbe.name, reply.major_opcode, reply.first_error },
+            );
+            global.connection.dbe = .{ .supported = .{
+                .opcode = reply.major_opcode,
+                .first_error = reply.first_error,
+            } };
+            return .newly_supported;
+        }
+    };
+}
+
 pub const Connection = struct {
     sock: std.posix.socket_t,
     setup: x11.ConnectSetup,
@@ -79,6 +132,8 @@ pub const Connection = struct {
 
     // TODO: we'll need some better mechanism for ids so we can't run out
     next_id_offset: u32 = 0,
+
+    dbe: Extension(x11.dbe.name.nativeSlice()) = .not_queried,
 
     fn windowFromId(self: *const Connection, id: x11.Window) Window {
         _ = self;
@@ -338,6 +393,10 @@ pub fn registerDynamicWindowClass(
     @panic("todo: dynamic x11 windows");
 }
 
+pub const WindowConfig = struct {
+    render_kind: enum { immediate, double_buffered },
+};
+
 pub const WindowClass = struct {
     callback: *const anyopaque,
     pub fn unregister(self: WindowClass) void {
@@ -464,7 +523,7 @@ pub fn staticWindow(window_id: zin.StaticWindowId) type {
         pub fn startTimer(id: usize, millis: u32) void {
             _ = id;
             _ = millis;
-            std.log.warn("TODO: implement timers for x11", .{});
+            log.warn("TODO: implement timers for x11", .{});
             //@panic("todo");
             // global.static_windows[@intFromEnum(window_id)].?.startTimer(id, millis);
         }
@@ -551,6 +610,11 @@ fn createWindow(
         });
         try global.connection.sendOne(msg_buf[0..len]);
     }
+
+    switch (config.x11.render_kind) {
+        .immediate => {},
+        .double_buffered => try global.connection.dbe.startQuery(&global.connection),
+    }
 }
 
 pub const VirtualKey = enum {
@@ -592,6 +656,26 @@ pub fn x11UpdateWindows() usize {
     return update_count;
 }
 
+pub fn pollSocket(sock: std.posix.socket_t, timeout_ms: i32) !enum { ready, timeout } {
+    var poll_fds = [_]std.posix.pollfd{
+        .{
+            .fd = sock,
+            .events = std.posix.POLL.IN,
+            .revents = 0,
+        },
+    };
+    return switch (try std.posix.poll(&poll_fds, timeout_ms)) {
+        0 => .timeout,
+        1 => .ready,
+        else => unreachable,
+    };
+}
+
+pub fn getTimeout() !?i32 {
+    // TODO
+    return -1;
+}
+
 pub fn mainLoop() !void {
     const double_buf = try x11.DoubleBuffer.init(
         std.mem.alignForward(usize, 1000, std.heap.pageSize()),
@@ -603,6 +687,22 @@ pub fn mainLoop() !void {
 
     while (true) {
         _ = x11UpdateWindows();
+
+        const action: enum { timeout, socket } = switch (try pollSocket(global.connection.sock, 0)) {
+            .ready => .socket,
+            .timeout => if (try getTimeout()) |timeout_ms| switch (try pollSocket(global.connection.sock, timeout_ms)) {
+                .ready => .socket,
+                .timeout => .timeout,
+            } else .timeout,
+        };
+
+        switch (action) {
+            .timeout => {
+                if (true) @panic("todo: timer handle timer expired");
+                continue;
+            },
+            .socket => {},
+        }
 
         {
             const recv_buf = buf.nextReadBuffer();
@@ -640,6 +740,13 @@ pub fn x11HandleMessage(msg_buf: []align(4) u8) !void {
     switch (x11.serverMsgTaggedUnion(msg_buf.ptr)) {
         .err => |msg| std.debug.panic("X11 error: {}", .{msg}),
         .reply => |msg| {
+            switch (try global.connection.dbe.onReply(msg)) {
+                .not_handled => {},
+                .newly_unsupported, .newly_supported => {
+                    // TODO: finish mapping any pending windows?
+                    return;
+                },
+            }
             log.info("todo: handle a reply message {}", .{msg});
             return error.TodoHandleReplyMessage;
         },

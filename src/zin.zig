@@ -197,6 +197,7 @@ pub const WindowConfigData = struct {
     background: Rgb8,
     dynamic_background: bool,
     win32: win32.WindowConfig,
+    x11: x11.WindowConfig,
 };
 pub fn Callback(window_config: WindowConfig) type {
     return makeTaggedUnion(

@@ -17,6 +17,7 @@ const StaticWindowId = enum {
                 .background = .{ .r = 49, .g = 49, .b = 49 },
                 .dynamic_background = false,
                 .win32 = .{ .render = .{ .gdi = .{} } },
+                .x11 = .{ .render_kind = .double_buffered },
             },
         };
     }
@@ -31,6 +32,7 @@ const extra_config: zin.WindowConfigData = .{
     .background = .{ .r = 255, .g = 0, .b = 0 },
     .dynamic_background = true,
     .win32 = .{ .render = .{ .gdi = .{ .use_backbuffer = false } } },
+    .x11 = .{ .render_kind = .double_buffered },
 };
 
 const global = struct {
