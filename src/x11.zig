@@ -438,21 +438,92 @@ const Window = struct {
         _ = self;
         _ = id;
         _ = millis;
-        log.err("TODO: implement startTimer for x11", .{});
+        @compileError("todo");
     }
 };
 
 const static_window_count = @typeInfo(zin.StaticWindowId).@"enum".fields.len;
 
-const StaticWindow = struct {
-    damaged: bool = false,
-    client_size: zin.XY = .{ .x = 0, .y = 0 },
-};
+pub const min_timer_id_int = 0;
 
 pub const global = struct {
     pub var connection: Connection = undefined;
     var static_callbacks: [static_window_count]?*const anyopaque = @splat(null);
-    var static_windows: [static_window_count]StaticWindow = @splat(.{});
+    var static_window_common_states: [static_window_count]StaticWindowCommonState = @splat(.{});
+    var static_window_custom_states: StaticWindowCustomStates = .{};
+
+    pub fn staticWindowCustomState(window_id: zin.StaticWindowId) *StaticWindowCustomState(window_id) {
+        return &@field(static_window_custom_states, @tagName(window_id));
+    }
+};
+
+fn timerCount(comptime TimerId: type) usize {
+    return switch (@typeInfo(TimerId)) {
+        .void => 1,
+        .@"enum" => |info| info.fields.len,
+        .int => @compileError("todo"),
+        else => @compileError("unsupported TimerId type: " ++ @typeName(TimerId)),
+    };
+}
+
+const StaticWindowCommonState = struct {
+    damaged: bool = false,
+    client_size: zin.XY = .{ .x = 0, .y = 0 },
+};
+fn StaticWindowCustomState(window_id: zin.StaticWindowId) type {
+    return struct {
+        timers: [timer_count]?Timer = [1]?Timer{null} ** timer_count,
+
+        pub const timer_count = timerCount(window_id.getConfig().TimerId());
+    };
+}
+const StaticWindowCustomStates = blk: {
+    var fields: [static_window_count]std.builtin.Type.StructField = undefined;
+    for (&fields, std.meta.fields(zin.StaticWindowId)) |*field, window_id_field| {
+        const window_id: zin.StaticWindowId = @enumFromInt(window_id_field.value);
+        field.* = .{
+            .name = window_id_field.name,
+            .type = StaticWindowCustomState(window_id),
+            .default_value_ptr = &(StaticWindowCustomState(window_id){}),
+            .is_comptime = false,
+            .alignment = @alignOf(StaticWindowCustomState(window_id)),
+        };
+    }
+    break :blk @Type(std.builtin.Type{
+        .@"struct" = .{
+            .layout = .auto,
+            .backing_integer = null,
+            .fields = &fields,
+            .decls = &.{},
+            .is_tuple = false,
+        },
+    });
+};
+
+const StaticWindowAndTimerId = blk: {
+    var fields: [static_window_count]std.builtin.Type.UnionField = undefined;
+    for (&fields, std.meta.fields(zin.StaticWindowId)) |*field, window_id_field| {
+        const window_id: zin.StaticWindowId = @enumFromInt(window_id_field.value);
+        const TimerId = window_id.getConfig().TimerId();
+        field.* = .{
+            .name = window_id_field.name,
+            .type = TimerId,
+            .alignment = @alignOf(TimerId),
+        };
+    }
+    break :blk @Type(std.builtin.Type{
+        .@"union" = .{
+            .layout = .auto,
+            .tag_type = zin.StaticWindowId,
+            .fields = &fields,
+            .decls = &.{},
+        },
+    });
+};
+
+const Timer = struct {
+    start: std.time.Instant,
+    duration_ms: u64,
 };
 
 /// Access the global x11 socket, this should only be called after a successful call to connect.
@@ -494,7 +565,7 @@ pub fn staticWindow(window_id: zin.StaticWindowId) type {
             const bg = x11FromRgb(config.data().background);
             const size = windowSizeFromInit(opt.size);
             try createWindow(&config.data(), size, bg, global.connection.staticWindowId(window_id));
-            global.static_windows[@intFromEnum(window_id)].client_size = size;
+            global.static_window_common_states[@intFromEnum(window_id)].client_size = size;
         }
         pub fn destroy() void {
             var msg_pair: [x11.free_gc.len + x11.destroy_window.len]u8 = undefined;
@@ -508,7 +579,7 @@ pub fn staticWindow(window_id: zin.StaticWindowId) type {
             );
         }
         pub fn getClientSize() zin.XY {
-            return global.static_windows[@intFromEnum(window_id)].client_size;
+            return global.static_window_common_states[@intFromEnum(window_id)].client_size;
         }
         pub fn show() void {
             return window().show();
@@ -518,14 +589,14 @@ pub fn staticWindow(window_id: zin.StaticWindowId) type {
             // global.static_windows[@intFromEnum(window_id)].?.foreground();
         }
         pub fn invalidate() void {
-            global.static_windows[@intFromEnum(window_id)].damaged = true;
+            global.static_window_common_states[@intFromEnum(window_id)].damaged = true;
         }
         pub fn startTimer(id: window_id.getConfig().TimerId(), millis: u32) void {
-            _ = id;
-            _ = millis;
-            log.warn("TODO: implement timers for x11", .{});
-            //@panic("todo");
-            // global.static_windows[@intFromEnum(window_id)].?.startTimer(id, millis);
+            const timers = &global.staticWindowCustomState(window_id).timers;
+            timers[zin.intFromTimerId(usize, window_id.getConfig().TimerId(), id)] = .{
+                .start = std.time.Instant.now() catch unreachable,
+                .duration_ms = millis,
+            };
         }
     };
 }
@@ -635,7 +706,7 @@ fn mouseButtonFromMsg(detail: u8) zin.MouseButtonId {
 pub fn x11UpdateWindows() usize {
     var update_count: usize = 0;
 
-    for (&global.static_windows, 0..) |*window, static_window_id_raw| {
+    for (&global.static_window_common_states, 0..) |*window, static_window_id_raw| {
         if (window.damaged) {
             const static_window_id: zin.StaticWindowId = @enumFromInt(static_window_id_raw);
             switch (static_window_id) {
@@ -643,7 +714,7 @@ pub fn x11UpdateWindows() usize {
                     const config = zin.WindowConfig{ .static = window_id };
                     staticCallback(window_id)(.{ .draw = .{
                         .window = global.connection.staticWindowId(static_window_id),
-                        .client_size = global.static_windows[@intFromEnum(window_id)].client_size,
+                        .client_size = global.static_window_common_states[@intFromEnum(window_id)].client_size,
                         .background = if (comptime config.data().dynamic_background) config.data().background else {},
                     } });
                 },
@@ -671,9 +742,55 @@ pub fn pollSocket(sock: std.posix.socket_t, timeout_ms: i32) !enum { ready, time
     };
 }
 
-pub fn getTimeout() !?i32 {
-    // TODO
-    return -1;
+const Timeout = union(enum) {
+    none,
+    ms: i32,
+    expired: StaticWindowAndTimerId,
+    pub fn initExpired(comptime window_id: zin.StaticWindowId, timer_id: window_id.getConfig().TimerId()) Timeout {
+        return switch (window_id) {
+            inline else => |case_window_id| .{ .expired = @unionInit(StaticWindowAndTimerId, @tagName(case_window_id), timer_id) },
+        };
+    }
+};
+fn minTimeoutMs(maybe_previous: ?i32, ms: i32) i32 {
+    return @min(maybe_previous orelse return ms, ms);
+}
+fn resolveNow(maybe_now_ref: *?std.time.Instant) std.time.Instant {
+    if (maybe_now_ref.* == null) {
+        maybe_now_ref.* = std.time.Instant.now() catch unreachable;
+    }
+    return maybe_now_ref.*.?;
+}
+
+fn debugPanic(comptime fmt: []const u8, args: anytype) void {
+    switch (builtin.mode) {
+        .Debug => std.debug.panic(fmt, args),
+        .ReleaseSafe, .ReleaseFast, .ReleaseSmall => log.err(fmt, args),
+    }
+}
+
+fn getTimerMinTimeout(maybe_now_ref: *?std.time.Instant) Timeout {
+    var maybe_min_ms: ?i32 = null;
+    inline for (std.meta.fields(zin.StaticWindowId)) |field| {
+        const window_id: zin.StaticWindowId = @enumFromInt(field.value);
+        const timers = &global.staticWindowCustomState(window_id).timers;
+        for (timers, 0..) |maybe_timer, timer_index| {
+            const timer = maybe_timer orelse continue;
+            const diff_ns = resolveNow(maybe_now_ref).since(timer.start);
+            const diff_ms: i32 = @intFromFloat(@round(@as(f32, @floatFromInt(diff_ns)) / @as(f32, std.time.ns_per_ms)));
+            const TimerId = window_id.getConfig().TimerId();
+            const is_negative = diff_ms < 0;
+            if (is_negative) {
+                debugPanic("timer diff is negative? {}", .{diff_ms});
+            }
+            if (is_negative or diff_ms >= timer.duration_ms) {
+                timers[timer_index].?.start = maybe_now_ref.*.?;
+                return .initExpired(window_id, zin.timerIdFromInt(TimerId, timer_index));
+            }
+            maybe_min_ms = minTimeoutMs(maybe_min_ms, @intCast(timer.duration_ms - @as(u32, @intCast(diff_ms))));
+        }
+    }
+    return if (maybe_min_ms) |min_ms| .{ .ms = min_ms } else .none;
 }
 
 pub fn mainLoop() !void {
@@ -686,22 +803,44 @@ pub fn mainLoop() !void {
     var buf = double_buf.contiguousReadBuffer();
 
     while (true) {
-        _ = x11UpdateWindows();
+        // we prioritize socket messagse over timeout, so we only start checking the
+        // timeout if the socket has no messages
+        while (true) {
+            _ = x11UpdateWindows();
 
-        const action: enum { timeout, socket } = switch (try pollSocket(global.connection.sock, 0)) {
-            .ready => .socket,
-            .timeout => if (try getTimeout()) |timeout_ms| switch (try pollSocket(global.connection.sock, timeout_ms)) {
-                .ready => .socket,
-                .timeout => .timeout,
-            } else .timeout,
-        };
+            switch (try pollSocket(global.connection.sock, 0)) {
+                .ready => break,
+                .timeout => {},
+            }
+            var maybe_now: ?std.time.Instant = null;
+            const expired = blk_expired: switch (getTimerMinTimeout(&maybe_now)) {
+                .none => {
+                    std.debug.assert(.ready == try pollSocket(global.connection.sock, -1));
+                    break;
+                },
+                .ms => |ms| switch (try pollSocket(global.connection.sock, ms)) {
+                    .ready => break,
+                    .timeout => {
+                        var new_now: ?std.time.Instant = null;
+                        break :blk_expired switch (getTimerMinTimeout(&new_now)) {
+                            .none => unreachable,
+                            .ms => unreachable,
+                            .expired => |expired| expired,
+                        };
+                    },
+                },
+                .expired => |expired| break :blk_expired expired,
+            };
 
-        switch (action) {
-            .timeout => {
-                if (true) @panic("todo: timer handle timer expired");
-                continue;
-            },
-            .socket => {},
+            switch (expired) {
+                inline else => |timer_id, window_id| switch (@typeInfo(@TypeOf(timer_id))) {
+                    .void => staticCallback(window_id)(.{ .timer = {} }),
+                    .@"enum" => {
+                        @panic("todo");
+                    },
+                    else => |TimerId| @compileError("todo: handle TimerId type: " ++ @tagName(TimerId)),
+                },
+            }
         }
 
         {
@@ -821,10 +960,10 @@ pub fn x11HandleMessage(msg_buf: []align(4) u8) !void {
                     const config = zin.WindowConfig{ .static = window_id };
                     staticCallback(window_id)(.{ .draw = .{
                         .window = msg.window,
-                        .client_size = global.static_windows[@intFromEnum(window_id)].client_size,
+                        .client_size = global.static_window_common_states[@intFromEnum(window_id)].client_size,
                         .background = if (comptime config.data().dynamic_background) config.data().background else {},
                     } });
-                    global.static_windows[@intFromEnum(window_id)].damaged = false;
+                    global.static_window_common_states[@intFromEnum(window_id)].damaged = false;
                 },
             } else @panic("todo: expose on dynamic windows");
         },
