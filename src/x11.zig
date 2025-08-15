@@ -68,27 +68,37 @@ fn sendNoSequencing(sock: std.posix.socket_t, data: []const u8) SendError!void {
     }
 }
 
-const fixed_ids_per_window = 2; // 1 for the window and 1 for the graphics context
+// 1 id for the window
+// 1 id for the graphics context
+// 1 id for the backbuffer (TODO: only some windows need a back buffer)
+const fixed_ids_per_window = 3;
+
+const SupportedExtension = struct {
+    opcode: u8,
+    first_error: u8,
+};
 
 fn Extension(comptime name: []const u8) type {
     return union(enum) {
         not_queried,
         query_sent: struct { sequence: u16 },
         unsupported,
-        supported: struct { opcode: u8, first_error: u8 },
+        supported: SupportedExtension,
 
         const Self = @This();
-        pub fn startQuery(self: *Self, connection: *Connection) !void {
-            switch (self.*) {
+        pub fn get(self: *Self, connection: *Connection) !?SupportedExtension {
+            return switch (self.*) {
                 .not_queried => {
                     const ext_name = comptime x11.Slice(u16, [*]const u8).initComptime(name);
                     var msg: [x11.query_extension.getLen(x11.dbe.name.len)]u8 = undefined;
                     x11.query_extension.serialize(&msg, ext_name);
                     try connection.sendOne(&msg);
                     self.* = .{ .query_sent = .{ .sequence = connection.sequence } };
+                    return null;
                 },
-                .query_sent, .unsupported, .supported => {},
-            }
+                .query_sent, .unsupported => null,
+                .supported => |supported| supported,
+            };
         }
         pub fn onReply(self: *Self, reply_base: *x11.ServerMsg.Reply) error{MalformedX11Reply}!enum { not_handled, newly_unsupported, newly_supported } {
             if (reply_base.sequence != switch (self.*) {
@@ -452,13 +462,14 @@ pub const global = struct {
     var static_window_common_states: [static_window_count]StaticWindowCommonState = @splat(.{});
     var static_window_custom_states: StaticWindowCustomStates = .{};
 
-    pub fn staticWindowCustomState(window_id: zin.StaticWindowId) *StaticWindowCustomState(window_id) {
+    pub fn staticWindowCustomState(comptime window_id: zin.StaticWindowId) *StaticWindowCustomState(window_id) {
         return &@field(static_window_custom_states, @tagName(window_id));
     }
 };
 
 fn timerCount(comptime TimerId: type) usize {
     return switch (@typeInfo(TimerId)) {
+        .noreturn => 0,
         .void => 1,
         .@"enum" => |info| info.fields.len,
         .int => @compileError("todo"),
@@ -473,6 +484,12 @@ const StaticWindowCommonState = struct {
 fn StaticWindowCustomState(window_id: zin.StaticWindowId) type {
     return struct {
         timers: [timer_count]?Timer = [1]?Timer{null} ** timer_count,
+        back_buffer: switch (window_id.getConfig().x11.render_kind) {
+            .immediate => struct {},
+            .double_buffered => struct {
+                allocated: bool = false,
+            },
+        } = .{},
 
         pub const timer_count = timerCount(window_id.getConfig().TimerId());
     };
@@ -568,6 +585,18 @@ pub fn staticWindow(window_id: zin.StaticWindowId) type {
             global.static_window_common_states[@intFromEnum(window_id)].client_size = size;
         }
         pub fn destroy() void {
+            switch (window_id.getConfig().x11.render_kind) {
+                .immediate => {},
+                .double_buffered => if (global.staticWindowCustomState(window_id).back_buffer.allocated) {
+                    var msg: [x11.dbe.deallocate.len]u8 = undefined;
+                    x11.dbe.deallocate.serialize(&msg, .{
+                        .ext_opcode = global.connection.dbe.supported.opcode,
+                        .backbuffer = backBufferFromWindow(global.connection.staticWindowId(window_id)),
+                    });
+                    global.connection.sendOne(&msg) catch |e| giveup("send XDBE deallocate", e);
+                },
+            }
+
             var msg_pair: [x11.free_gc.len + x11.destroy_window.len]u8 = undefined;
             x11.free_gc.serialize(msg_pair[0..x11.free_gc.len], gcFromWindow(global.connection.staticWindowId(window_id)));
             x11.destroy_window.serialize(msg_pair[x11.free_gc.len..], global.connection.staticWindowId(window_id));
@@ -603,6 +632,9 @@ pub fn staticWindow(window_id: zin.StaticWindowId) type {
 
 pub fn gcFromWindow(id: x11.Window) x11.GraphicsContext {
     return @enumFromInt(@intFromEnum(id) + 1);
+}
+pub fn backBufferFromWindow(id: x11.Window) x11.Drawable {
+    return @enumFromInt(@intFromEnum(id) + 2);
 }
 
 fn windowSizeFromInit(init: zin.WindowSizeInit) zin.XY {
@@ -681,11 +713,6 @@ fn createWindow(
         });
         try global.connection.sendOne(msg_buf[0..len]);
     }
-
-    switch (config.x11.render_kind) {
-        .immediate => {},
-        .double_buffered => try global.connection.dbe.startQuery(&global.connection),
-    }
 }
 
 pub const VirtualKey = enum {
@@ -703,6 +730,59 @@ fn mouseButtonFromMsg(detail: u8) zin.MouseButtonId {
     };
 }
 
+fn drawStaticWindow(comptime window_id: zin.StaticWindowId) void {
+    const config = zin.WindowConfig{ .static = window_id };
+    const window = global.connection.staticWindowId(window_id);
+    const UseBackBuffer = switch (window_id.getConfig().x11.render_kind) {
+        .immediate => void,
+        .double_buffered => bool,
+    };
+    const use_back_buffer: UseBackBuffer = blk: switch (window_id.getConfig().x11.render_kind) {
+        .immediate => break :blk {},
+        .double_buffered => {
+            if (global.staticWindowCustomState(window_id).back_buffer.allocated)
+                break :blk true;
+            if (global.connection.dbe.get(&global.connection) catch null) |dbe| {
+                var msg: [x11.dbe.allocate.len]u8 = undefined;
+                x11.dbe.allocate.serialize(&msg, .{
+                    .ext_opcode = dbe.opcode,
+                    .window = window,
+                    .backbuffer = backBufferFromWindow(window),
+                    .swapaction = .background,
+                });
+                global.connection.sendOne(&msg) catch |e| giveup("dbe allocate", e);
+                global.staticWindowCustomState(window_id).back_buffer.allocated = true;
+                break :blk true;
+            }
+            break :blk false;
+        },
+    };
+    staticCallback(window_id)(.{ .draw = .{
+        .window = window,
+        .use_back_buffer = use_back_buffer,
+        .client_size = global.static_window_common_states[@intFromEnum(window_id)].client_size,
+        .background = if (comptime config.data().dynamic_background) config.data().background else {},
+    } });
+
+    switch (window_id.getConfig().x11.render_kind) {
+        .immediate => {},
+        .double_buffered => if (use_back_buffer) {
+            const swap_infos = [_]x11.dbe.SwapInfo{
+                .{ .window = window, .action = .background },
+            };
+            var msg: [x11.dbe.swap.getLen(swap_infos.len)]u8 = undefined;
+            const swap_infos_x11: x11.Slice(u32, [*]const x11.dbe.SwapInfo) = .{
+                .ptr = &swap_infos,
+                .len = swap_infos.len,
+            };
+            x11.dbe.swap.serialize(&msg, swap_infos_x11, .{
+                .ext_opcode = global.connection.dbe.supported.opcode,
+            });
+            global.connection.sendOne(&msg) catch |e| giveup("send swap", e);
+        },
+    }
+}
+
 pub fn x11UpdateWindows() usize {
     var update_count: usize = 0;
 
@@ -710,14 +790,7 @@ pub fn x11UpdateWindows() usize {
         if (window.damaged) {
             const static_window_id: zin.StaticWindowId = @enumFromInt(static_window_id_raw);
             switch (static_window_id) {
-                inline else => |window_id| {
-                    const config = zin.WindowConfig{ .static = window_id };
-                    staticCallback(window_id)(.{ .draw = .{
-                        .window = global.connection.staticWindowId(static_window_id),
-                        .client_size = global.static_window_common_states[@intFromEnum(window_id)].client_size,
-                        .background = if (comptime config.data().dynamic_background) config.data().background else {},
-                    } });
-                },
+                inline else => |window_id| drawStaticWindow(window_id),
             }
             window.damaged = false;
             update_count += 1;
@@ -956,15 +1029,7 @@ pub fn x11HandleMessage(msg_buf: []align(4) u8) !void {
         },
         .expose => |msg| {
             if (global.connection.staticWindowFromX11Id(msg.window)) |w| switch (w) {
-                inline else => |window_id| {
-                    const config = zin.WindowConfig{ .static = window_id };
-                    staticCallback(window_id)(.{ .draw = .{
-                        .window = msg.window,
-                        .client_size = global.static_window_common_states[@intFromEnum(window_id)].client_size,
-                        .background = if (comptime config.data().dynamic_background) config.data().background else {},
-                    } });
-                    global.static_window_common_states[@intFromEnum(window_id)].damaged = false;
-                },
+                inline else => |window_id| drawStaticWindow(window_id),
             } else @panic("todo: expose on dynamic windows");
         },
         .mapping_notify => |msg| {
@@ -989,6 +1054,10 @@ fn giveup(what: []const u8, e: anyerror) noreturn {
 pub fn Draw(window_config: zin.WindowConfig) type {
     return struct {
         window: x11.Window,
+        use_back_buffer: switch (window_config.data().x11.render_kind) {
+            .immediate => void,
+            .double_buffered => bool,
+        },
         client_size: zin.XY,
         background: if (window_config.data().dynamic_background) zin.Rgb8 else void,
         // gc_background: Rgb,
@@ -996,12 +1065,27 @@ pub fn Draw(window_config: zin.WindowConfig) type {
 
         const Self = @This();
 
+        pub fn x11Drawable(self: *const Self) x11.Drawable {
+            return switch (window_config.data().x11.render_kind) {
+                .immediate => self.window.drawable(),
+                .double_buffered => if (self.use_back_buffer)
+                    backBufferFromWindow(self.window)
+                else
+                    self.window.drawable(),
+            };
+        }
+
         pub fn getDpiScale(self: *const Self) f32 {
             _ = self;
             return 1.0;
         }
 
         pub fn clear(self: *const Self) void {
+            switch (window_config.data().x11.render_kind) {
+                .immediate => {},
+                .double_buffered => if (self.use_back_buffer) return,
+            }
+
             const rgb = if (comptime window_config.data().dynamic_background)
                 self.background
             else
@@ -1028,7 +1112,7 @@ pub fn Draw(window_config: zin.WindowConfig) type {
                 .foreground = x11FromRgb(rgb),
             });
             x11.poly_fill_rectangle.serialize(messages[after_change_gc..].ptr, .{
-                .drawable_id = self.window.drawable(),
+                .drawable_id = self.x11Drawable(),
                 .gc_id = gcFromWindow(self.window),
             }, &[_]x11.Rectangle{
                 .{
@@ -1053,7 +1137,7 @@ pub fn Draw(window_config: zin.WindowConfig) type {
                 .foreground = x11FromRgb(rgb),
             });
             x11.image_text8.serialize(messages[after_change_gc..].ptr, slice, .{
-                .drawable_id = self.window.drawable(),
+                .drawable_id = self.x11Drawable(),
                 .gc_id = gcFromWindow(self.window),
                 .x = std.math.cast(i16, x) orelse std.debug.panic("TODO: what to do with x value of {}", .{x}),
                 .y = std.math.cast(i16, y) orelse std.debug.panic("TODO: what to do with y value of {}", .{y}),

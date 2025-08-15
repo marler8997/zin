@@ -205,7 +205,7 @@ pub const WindowConfigData = struct {
 
     pub fn TimerId(self: WindowConfigData) type {
         return switch (self.timers) {
-            .none => @compileError("here"),
+            .none => noreturn,
             .one => void,
             .type => |t| {
                 checkTimersType(t);
