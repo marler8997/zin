@@ -13,7 +13,7 @@ const StaticWindowId = enum {
             .main => .{
                 .key_events = true,
                 .mouse_events = true,
-                .timers = true,
+                .timers = .one,
                 .background = .{ .r = 49, .g = 49, .b = 49 },
                 .dynamic_background = false,
                 .win32 = .{ .render = .{ .gdi = .{} } },
@@ -28,7 +28,7 @@ pub const panic = zin.panic(.{ .title = "Hello Panic!" });
 const extra_config: zin.WindowConfigData = .{
     .key_events = false,
     .mouse_events = false,
-    .timers = false,
+    .timers = .none,
     .background = .{ .r = 255, .g = 0, .b = 0 },
     .dynamic_background = true,
     .win32 = .{ .render = .{ .gdi = .{ .use_backbuffer = false } } },
@@ -73,7 +73,7 @@ pub fn main() !void {
     //       seems to close the entire X11 connection right now?
     defer if (zin.platform_kind != .x11) zin.staticWindow(.main).destroy();
     zin.staticWindow(.main).show();
-    zin.staticWindow(.main).startTimer(0, 14);
+    zin.staticWindow(.main).startTimer({}, 14);
 
     try zin.mainLoop();
 }

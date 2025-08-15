@@ -193,12 +193,58 @@ pub const WindowConfig = union(enum) {
 pub const WindowConfigData = struct {
     key_events: bool,
     mouse_events: bool,
-    timers: bool,
+    timers: union(enum) {
+        none,
+        one,
+        type: type,
+    },
     background: Rgb8,
     dynamic_background: bool,
     win32: win32.WindowConfig,
     x11: x11.WindowConfig,
+
+    pub fn TimerId(self: WindowConfigData) type {
+        return switch (self.timers) {
+            .none => @compileError("here"),
+            .one => void,
+            .type => |t| {
+                checkTimersType(t);
+                return t;
+            },
+        };
+    }
 };
+
+fn checkTimersType(comptime T: type) void {
+    switch (@typeInfo(T)) {
+        .@"enum" => {
+            const fields = std.meta.fields(T);
+            if (fields.len == 0) @compileError("cannot set timers to enum type with 0 values, use .none instead");
+            if (fields.len == 1) @compileError("cannot set timers to enum type with 1 value, use .one instead");
+        },
+        .int => {},
+        else => @compileError("unsupported timers type: " ++ @tagName(T)),
+    }
+}
+
+pub fn intFromTimerId(comptime Int: type, comptime TimerId: type, id: TimerId) Int {
+    return switch (@typeInfo(TimerId)) {
+        .void => return platform.min_timer_id_int,
+        .@"enum" => @intFromEnum(id),
+        else => @compileError("unsupported TimerId type: " ++ @typeName(TimerId)),
+    };
+}
+pub fn timerIdFromInt(comptime TimerId: type, int: anytype) TimerId {
+    return switch (@typeInfo(TimerId)) {
+        .void => {
+            std.debug.assert(int == platform.min_timer_id_int);
+            return {};
+        },
+        .@"enum" => @enumFromInt(int),
+        else => @compileError("unsupported TimerId type: " ++ @typeName(TimerId)),
+    };
+}
+
 pub fn Callback(window_config: WindowConfig) type {
     return makeTaggedUnion(
         &([_]Field{
@@ -208,9 +254,11 @@ pub fn Callback(window_config: WindowConfig) type {
             .{ .name = "key", .type = Key },
         } else [_]Field{}) ++ (if (window_config.data().mouse_events) [_]Field{
             .{ .name = "mouse", .type = Mouse },
-        } else [_]Field{}) ++ (if (window_config.data().timers) [_]Field{
-            .{ .name = "timer", .type = usize },
-        } else [_]Field{})),
+        } else [_]Field{}) ++ (switch (window_config.data().timers) {
+            .none => [_]Field{},
+            .one => [_]Field{.{ .name = "timer", .type = void }},
+            .type => |t| [_]Field{.{ .name = "timer", .type = t }},
+        })),
     );
 }
 
