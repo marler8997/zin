@@ -71,7 +71,12 @@ fn sendNoSequencing(sock: std.posix.socket_t, data: []const u8) SendError!void {
 // 1 id for the window
 // 1 id for the graphics context
 // 1 id for the backbuffer (TODO: only some windows need a back buffer)
-const fixed_ids_per_window = 3;
+const FixedWindowObject = enum {
+    window,
+    graphics_context,
+    back_buffer, // NOTE: only some windows need a back buffer
+};
+const fixed_ids_per_window: comptime_int = std.meta.fields(FixedWindowObject).len;
 
 const SupportedExtension = struct {
     opcode: u8,
@@ -154,6 +159,20 @@ pub const Connection = struct {
         const id_offset = @intFromEnum(window) - @intFromEnum(self.setup.fixed().resource_id_base);
         if (id_offset < static_window_count * fixed_ids_per_window) return @as(zin.StaticWindowId, @enumFromInt(@divTrunc(id_offset, fixed_ids_per_window)));
         return null;
+    }
+    fn drawableFromX11Id(self: *const Connection, id: u32) union(enum) {
+        not_drawable,
+        static_window: zin.StaticWindowId,
+        static_back_buffer: zin.StaticWindowId,
+    } {
+        if (id < @intFromEnum(self.setup.fixed().resource_id_base)) return .not_drawable;
+        const offset = id - @intFromEnum(self.setup.fixed().resource_id_base);
+        if (offset >= static_window_count * fixed_ids_per_window) return .not_drawable;
+        return switch (@as(FixedWindowObject, @enumFromInt(offset % fixed_ids_per_window))) {
+            .window => .{ .static_window = @as(zin.StaticWindowId, @enumFromInt(@divTrunc(offset, fixed_ids_per_window))) },
+            .graphics_context => .not_drawable,
+            .back_buffer => .{ .static_window = @as(zin.StaticWindowId, @enumFromInt(@divTrunc(offset - 2, fixed_ids_per_window))) },
+        };
     }
 
     pub fn reader(self: *const Connection) SocketReader {
@@ -594,6 +613,7 @@ pub fn staticWindow(window_id: zin.StaticWindowId) type {
                         .backbuffer = backBufferFromWindow(global.connection.staticWindowId(window_id)),
                     });
                     global.connection.sendOne(&msg) catch |e| giveup("send XDBE deallocate", e);
+                    global.staticWindowCustomState(window_id).back_buffer.allocated = false;
                 },
             }
 
@@ -950,7 +970,33 @@ pub fn quitMainLoop() void {
 
 pub fn x11HandleMessage(msg_buf: []align(4) u8) !void {
     switch (x11.serverMsgTaggedUnion(msg_buf.ptr)) {
-        .err => |msg| std.debug.panic("X11 error: {}", .{msg}),
+        .err => |msg| {
+            switch (msg.code) {
+                // .drawable => {
+                //     // these errors are expected, if a window is destroyed while we are rendering
+                //     // to it which I think is a non-preventable error.
+                //     const bad_id = msg.generic;
+                //     switch (global.connection.drawableFromX11Id(msg.generic)) {
+                //         .not_drawable => std.debug.panic(
+                //             "X11 bad drawable error for non-drawable id {} (base={}): {}",
+                //             .{ bad_id, @intFromEnum(global.connection.setup.fixed().resource_id_base), msg },
+                //         ),
+                //         .static_window => |window_id| {
+                //             log.info("X11 bad drawable for static window {s}", .{@tagName(window_id)});
+                //             // TODO: we should verify that during this
+                //             //       sequence the static window was destroyed or something?
+                //         },
+                //         .static_back_buffer => |window_id| {
+                //             log.info("X11 bad drawable for back_buffer of static window {s}", .{@tagName(window_id)});
+                //             // TODO: we should verify that during this
+                //             //       sequence the static window was destroyed or something?
+                //         },
+                //     }
+                // },
+                // TODO: handle more errors, errors should be recoverable
+                else => std.debug.panic("Unhandled X11 error: {}", .{msg}),
+            }
+        },
         .reply => |msg| {
             switch (try global.connection.dbe.onReply(msg)) {
                 .not_handled => {},
