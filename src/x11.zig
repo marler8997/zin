@@ -1173,22 +1173,29 @@ pub fn Draw(window_config: zin.WindowConfig) type {
         }
 
         pub fn text(self: *const Self, t: []const u8, x: i32, y: i32, rgb: zin.Rgb8) void {
-            const slice = x11.Slice(u8, [*]const u8){
+            const slice = x11.SliceWithMaxLen(u8, [*]const u8, 254){
                 .ptr = t.ptr,
                 .len = std.math.cast(u8, t.len) orelse std.debug.panic("TODO: handle text with {} bytes", .{t.len}),
             };
-            var messages: [x11.change_gc.max_len + x11.image_text8.max_len]u8 = undefined;
+            const poly_text8_max_one_item = comptime x11.poly_text8.getLen(&[_]x11.TextItem8{
+                .{ .text_element = .{ .delta = 0, .string = .undefined_max_len } },
+            });
+
+            var messages: [x11.change_gc.max_len + poly_text8_max_one_item]u8 = undefined;
             const after_change_gc: usize = x11.change_gc.serialize(&messages, gcFromWindow(self.window), .{
                 .background = 0, // TODO: how do we declare this as transparent
                 .foreground = x11FromRgb(rgb),
             });
-            x11.image_text8.serialize(messages[after_change_gc..].ptr, slice, .{
+            const items = [_]x11.TextItem8{
+                .{ .text_element = .{ .delta = 0, .string = slice } },
+            };
+            x11.poly_text8.serialize(messages[after_change_gc..].ptr, &items, .{
                 .drawable_id = self.x11Drawable(),
                 .gc_id = gcFromWindow(self.window),
                 .x = std.math.cast(i16, x) orelse std.debug.panic("TODO: what to do with x value of {}", .{x}),
                 .y = std.math.cast(i16, y) orelse std.debug.panic("TODO: what to do with y value of {}", .{y}),
             });
-            const total_len: usize = after_change_gc + x11.image_text8.getLen(slice.len);
+            const total_len: usize = after_change_gc + x11.poly_text8.getLen(&items);
             global.connection.sendMultiple(2, messages[0..total_len]) catch |e| giveup("send ImageText", e);
         }
     };
