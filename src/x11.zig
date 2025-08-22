@@ -478,7 +478,7 @@ pub const min_timer_id_int = 0;
 pub const global = struct {
     pub var connection: Connection = undefined;
     var static_callbacks: [static_window_count]?*const anyopaque = @splat(null);
-    var static_window_common_states: [static_window_count]StaticWindowCommonState = @splat(.{});
+    var static_window_common_states: [static_window_count]StaticWindowCommonState = @splat(.not_created);
     var static_window_custom_states: StaticWindowCustomStates = .{};
 
     pub fn staticWindowCustomState(comptime window_id: zin.StaticWindowId) *StaticWindowCustomState(window_id) {
@@ -496,9 +496,12 @@ fn timerCount(comptime TimerId: type) usize {
     };
 }
 
-const StaticWindowCommonState = struct {
-    damaged: bool = false,
-    client_size: zin.XY = .{ .x = 0, .y = 0 },
+const StaticWindowCommonState = union(enum) {
+    not_created,
+    created: struct {
+        damaged: bool,
+        client_size: zin.XY,
+    },
 };
 fn StaticWindowCustomState(window_id: zin.StaticWindowId) type {
     return struct {
@@ -601,9 +604,17 @@ pub fn staticWindow(window_id: zin.StaticWindowId) type {
             const bg = x11FromRgb(config.data().background);
             const size = windowSizeFromInit(opt.size);
             try createWindow(&config.data(), size, bg, global.connection.staticWindowId(window_id));
-            global.static_window_common_states[@intFromEnum(window_id)].client_size = size;
+            global.static_window_common_states[@intFromEnum(window_id)] = .{ .created = .{
+                .damaged = false,
+                .client_size = size,
+            } };
         }
         pub fn destroy() void {
+            switch (global.static_window_common_states[@intFromEnum(window_id)]) {
+                .not_created => @panic("destroy called on windows that's not created"),
+                .created => {},
+            }
+
             switch (window_id.getConfig().x11.render_kind) {
                 .immediate => {},
                 .double_buffered => if (global.staticWindowCustomState(window_id).back_buffer.allocated) {
@@ -626,9 +637,13 @@ pub fn staticWindow(window_id: zin.StaticWindowId) type {
                 "send over X11 socket failed with {s}",
                 .{@errorName(e)},
             );
+            global.static_window_common_states[@intFromEnum(window_id)] = .not_created;
         }
         pub fn getClientSize() zin.XY {
-            return global.static_window_common_states[@intFromEnum(window_id)].client_size;
+            return switch (global.static_window_common_states[@intFromEnum(window_id)]) {
+                .not_created => .{ .x = 0, .y = 0 },
+                .created => |*created| created.client_size,
+            };
         }
         pub fn show() void {
             return window().show();
@@ -638,7 +653,10 @@ pub fn staticWindow(window_id: zin.StaticWindowId) type {
             // global.static_windows[@intFromEnum(window_id)].?.foreground();
         }
         pub fn invalidate() void {
-            global.static_window_common_states[@intFromEnum(window_id)].damaged = true;
+            switch (global.static_window_common_states[@intFromEnum(window_id)]) {
+                .not_created => {},
+                .created => |*created| created.damaged = true,
+            }
         }
         pub fn startTimer(id: window_id.getConfig().TimerId(), millis: u32) void {
             const timers = &global.staticWindowCustomState(window_id).timers;
@@ -750,7 +768,12 @@ fn mouseButtonFromMsg(detail: u8) zin.MouseButtonId {
     };
 }
 
-fn drawStaticWindow(comptime window_id: zin.StaticWindowId) void {
+fn drawStaticWindow(comptime window_id: zin.StaticWindowId) enum { not_created, success } {
+    const created = switch (global.static_window_common_states[@intFromEnum(window_id)]) {
+        .not_created => return .not_created,
+        .created => |*created| created,
+    };
+
     const config = zin.WindowConfig{ .static = window_id };
     const window = global.connection.staticWindowId(window_id);
     const UseBackBuffer = switch (window_id.getConfig().x11.render_kind) {
@@ -780,7 +803,7 @@ fn drawStaticWindow(comptime window_id: zin.StaticWindowId) void {
     staticCallback(window_id)(.{ .draw = .{
         .window = window,
         .use_back_buffer = use_back_buffer,
-        .client_size = global.static_window_common_states[@intFromEnum(window_id)].client_size,
+        .client_size = created.client_size,
         .background = if (comptime config.data().dynamic_background) config.data().background else {},
     } });
 
@@ -801,21 +824,28 @@ fn drawStaticWindow(comptime window_id: zin.StaticWindowId) void {
             global.connection.sendOne(&msg) catch |e| giveup("send swap", e);
         },
     }
+    return .success;
 }
 
 pub fn x11UpdateWindows() usize {
     var update_count: usize = 0;
 
-    for (&global.static_window_common_states, 0..) |*window, static_window_id_raw| {
-        if (window.damaged) {
-            const static_window_id: zin.StaticWindowId = @enumFromInt(static_window_id_raw);
-            switch (static_window_id) {
-                inline else => |window_id| drawStaticWindow(window_id),
+    for (&global.static_window_common_states, 0..) |*window, static_window_id_raw| switch (window.*) {
+        .not_created => {},
+        .created => |*created| {
+            if (created.damaged) {
+                const static_window_id: zin.StaticWindowId = @enumFromInt(static_window_id_raw);
+                switch (static_window_id) {
+                    inline else => |window_id| switch (drawStaticWindow(window_id)) {
+                        .not_created => unreachable,
+                        .success => {},
+                    },
+                }
+                created.damaged = false;
+                update_count += 1;
             }
-            window.damaged = false;
-            update_count += 1;
-        }
-    }
+        },
+    };
 
     return update_count;
 }
@@ -1075,7 +1105,10 @@ pub fn x11HandleMessage(msg_buf: []align(4) u8) !void {
         },
         .expose => |msg| {
             if (global.connection.staticWindowFromX11Id(msg.window)) |w| switch (w) {
-                inline else => |window_id| drawStaticWindow(window_id),
+                inline else => |window_id| switch (drawStaticWindow(window_id)) {
+                    .not_created => {}, // ok means we destroyed this window
+                    .success => {},
+                },
             } else @panic("todo: expose on dynamic windows");
         },
         .mapping_notify => |msg| {
