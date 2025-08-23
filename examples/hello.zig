@@ -11,6 +11,7 @@ const StaticWindowId = enum {
     pub fn getConfig(self: StaticWindowId) zin.WindowConfigData {
         return switch (self) {
             .main => .{
+                .window_size_events = true,
                 .key_events = true,
                 .mouse_events = true,
                 .timers = .one,
@@ -26,6 +27,7 @@ const StaticWindowId = enum {
 pub const panic = zin.panic(.{ .title = "Hello Panic!" });
 
 const extra_config: zin.WindowConfigData = .{
+    .window_size_events = false,
     .key_events = false,
     .mouse_events = false,
     .timers = .none,
@@ -81,6 +83,7 @@ pub fn main() !void {
 fn callback(cb: zin.Callback(.{ .static = .main })) void {
     switch (cb) {
         .close => zin.quitMainLoop(),
+        .window_size => {},
         .draw => |d| {
             {
                 const now = std.time.Instant.now() catch @panic("?");

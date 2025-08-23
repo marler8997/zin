@@ -500,11 +500,16 @@ const StaticWindowCommonState = union(enum) {
     not_created,
     created: struct {
         damaged: bool,
-        client_size: zin.XY,
     },
 };
 fn StaticWindowCustomState(window_id: zin.StaticWindowId) type {
     return struct {
+        client_size: if (window_id.getConfig().window_size_events)
+            zin.XY
+        else
+            void = if (window_id.getConfig().window_size_events)
+            .{ .x = 0, .y = 0 }
+        else {},
         timers: [timer_count]?Timer = [1]?Timer{null} ** timer_count,
         back_buffer: switch (window_id.getConfig().x11.render_kind) {
             .immediate => struct {},
@@ -514,6 +519,11 @@ fn StaticWindowCustomState(window_id: zin.StaticWindowId) type {
         } = .{},
 
         pub const timer_count = timerCount(window_id.getConfig().TimerId());
+
+        const Self = @This();
+        pub fn onDestroyed(self: *Self) void {
+            self.* = .{};
+        }
     };
 }
 const StaticWindowCustomStates = blk: {
@@ -606,8 +616,10 @@ pub fn staticWindow(window_id: zin.StaticWindowId) type {
             try createWindow(&config.data(), size, bg, global.connection.staticWindowId(window_id));
             global.static_window_common_states[@intFromEnum(window_id)] = .{ .created = .{
                 .damaged = false,
-                .client_size = size,
             } };
+            if (window_id.getConfig().window_size_events) {
+                global.staticWindowCustomState(window_id).client_size = size;
+            }
         }
         pub fn destroy() void {
             switch (global.static_window_common_states[@intFromEnum(window_id)]) {
@@ -638,12 +650,11 @@ pub fn staticWindow(window_id: zin.StaticWindowId) type {
                 .{@errorName(e)},
             );
             global.static_window_common_states[@intFromEnum(window_id)] = .not_created;
+            global.staticWindowCustomState(window_id).onDestroyed();
         }
         pub fn getClientSize() zin.XY {
-            return switch (global.static_window_common_states[@intFromEnum(window_id)]) {
-                .not_created => .{ .x = 0, .y = 0 },
-                .created => |*created| created.client_size,
-            };
+            if (!window_id.getConfig().window_size_events) @compileError("getClientSize disabled because window_size_events is false");
+            return global.staticWindowCustomState(window_id).client_size;
         }
         pub fn show() void {
             return window().show();
@@ -733,6 +744,9 @@ fn createWindow(
                 .pointer_motion = if (config.mouse_events) 1 else 0,
                 .keymap_state = 1,
                 .exposure = 1,
+                // results CirculateNotify, GravityNotify, ConfigureNotify, ReparentNotify, MapNotify
+                // UnmapNotify, DestroyNotify
+                .structure_notify = if (config.window_size_events) 1 else 0,
             },
             // .dont_propagate = 1,
         });
@@ -769,10 +783,10 @@ fn mouseButtonFromMsg(detail: u8) zin.MouseButtonId {
 }
 
 fn drawStaticWindow(comptime window_id: zin.StaticWindowId) enum { not_created, success } {
-    const created = switch (global.static_window_common_states[@intFromEnum(window_id)]) {
+    switch (global.static_window_common_states[@intFromEnum(window_id)]) {
         .not_created => return .not_created,
-        .created => |*created| created,
-    };
+        .created => {},
+    }
 
     const config = zin.WindowConfig{ .static = window_id };
     const window = global.connection.staticWindowId(window_id);
@@ -803,7 +817,7 @@ fn drawStaticWindow(comptime window_id: zin.StaticWindowId) enum { not_created, 
     staticCallback(window_id)(.{ .draw = .{
         .window = window,
         .use_back_buffer = use_back_buffer,
-        .client_size = created.client_size,
+        .client_size = if (config.data().window_size_events) global.staticWindowCustomState(window_id).client_size else {},
         .background = if (comptime config.data().dynamic_background) config.data().background else {},
     } });
 
@@ -1119,10 +1133,21 @@ pub fn x11HandleMessage(msg_buf: []align(4) u8) !void {
             log.info("todo: server msg {}", .{msg});
             return error.UnhandledServerMsg;
         },
-        .map_notify,
-        .reparent_notify,
-        .configure_notify,
-        => unreachable, // did not register for these
+        // TODO: we should updated the window's "mapped" state?
+        .map_notify => {},
+        .reparent_notify => {}, // ignore
+        .configure_notify => |msg| {
+            if (global.connection.staticWindowFromX11Id(msg.window)) |w| switch (w) {
+                inline else => |window_id| {
+                    std.debug.assert(window_id.getConfig().window_size_events);
+                    const current_size = global.staticWindowCustomState(window_id).client_size;
+                    if (msg.width != current_size.x or msg.height != current_size.y) {
+                        global.staticWindowCustomState(window_id).client_size = .{ .x = msg.width, .y = msg.height };
+                        staticCallback(window_id)(.{ .window_size = .{ .x = msg.width, .y = msg.height } });
+                    }
+                },
+            } else @panic("todo: configure_notify on dynamic windows");
+        },
     }
 }
 
@@ -1137,7 +1162,7 @@ pub fn Draw(window_config: zin.WindowConfig) type {
             .immediate => void,
             .double_buffered => bool,
         },
-        client_size: zin.XY,
+        client_size: if (window_config.data().window_size_events) zin.XY else void,
         background: if (window_config.data().dynamic_background) zin.Rgb8 else void,
         // gc_background: Rgb,
         // gc_foreground: Rgb,

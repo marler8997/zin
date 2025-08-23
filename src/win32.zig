@@ -590,6 +590,17 @@ fn makeWndProc(
                     paint(config, class, hwnd);
                     return 0;
                 },
+                win32.WM_SIZE => {
+                    if (config.data().window_size_events) {
+                        const width = win32.loword(lparam);
+                        const height = win32.hiword(lparam);
+                        const client_size = win32.getClientSize(hwnd);
+                        std.debug.assert(width == client_size.cx);
+                        std.debug.assert(height == client_size.cy);
+                        class.callback(.{ .window_size = .{ .x = width, .y = height } });
+                    }
+                    return 0;
+                },
                 win32.WM_TIMER => {
                     switch (config.data().timers) {
                         .none => {},

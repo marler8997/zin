@@ -191,6 +191,7 @@ pub const WindowConfig = union(enum) {
 };
 
 pub const WindowConfigData = struct {
+    window_size_events: bool,
     key_events: bool,
     mouse_events: bool,
     timers: union(enum) {
@@ -250,7 +251,9 @@ pub fn Callback(window_config: WindowConfig) type {
         &([_]Field{
             .{ .name = "close", .type = void },
             .{ .name = "draw", .type = Draw(window_config) },
-        } ++ (if (window_config.data().key_events) [_]Field{
+        } ++ (if (window_config.data().window_size_events) [_]Field{
+            .{ .name = "window_size", .type = XY },
+        } else [_]Field{}) ++ (if (window_config.data().key_events) [_]Field{
             .{ .name = "key", .type = Key },
         } else [_]Field{}) ++ (if (window_config.data().mouse_events) [_]Field{
             .{ .name = "mouse", .type = Mouse },
