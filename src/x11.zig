@@ -1133,8 +1133,9 @@ pub fn x11HandleMessage(msg_buf: []align(4) u8) !void {
             log.info("todo: server msg {}", .{msg});
             return error.UnhandledServerMsg;
         },
-        // TODO: we should updated the window's "mapped" state?
-        .map_notify => {},
+        .destroy_notify => @panic("todo: implement handler for destroy_notify"),
+        .unmap_notify => {}, // ignore for now
+        .map_notify => {}, // ignore for now
         .reparent_notify => {}, // ignore
         .configure_notify => |msg| {
             if (global.connection.staticWindowFromX11Id(msg.window)) |w| switch (w) {
