@@ -101,7 +101,7 @@ fn callback(cb: zin.Callback(.{ .static = .main })) void {
                 .y = @intFromFloat(@round(@as(f32, @floatFromInt(size.y)) * global.text_position)),
             };
             d.rect(.ltwh(animate.x, size.y - animate.y, 10, 10), .red);
-            d.text("Press 'N' to create a new window.", 10, 50, .white);
+            d.text("Press 'n' to create a new window.", 10, 50, .white);
             d.text("Weeee!!!", animate.x, animate.y, .white);
             if (global.mouse_position) |p| {
                 d.text("Mouse", p.x, p.y, .white);
@@ -109,7 +109,9 @@ fn callback(cb: zin.Callback(.{ .static = .main })) void {
         },
         .timer => zin.staticWindow(.main).invalidate(),
         .key => |key| {
-            if (key.vk == .n) {
+            var keyboard_state: zin.UnicodeKeyboardState = .init();
+            const utf8 = key.utf8(keyboard_state.ref());
+            if (null != std.mem.indexOfScalar(u8, utf8.slice(), 'n')) {
                 if (global.class_extra == null) {
                     global.class_extra = zin.registerDynamicWindowClass(extra_config, .{
                         .callback = extraCallback,

@@ -41,6 +41,40 @@ fn readSocket(sock: std.posix.socket_t, buffer: []u8) !usize {
 
 const this = @This();
 
+pub const ReadFullError = error{
+    SystemResources,
+
+    EndOfStream,
+    ConnectionRefused,
+    ConnectionResetByPeer,
+    SocketNotConnected,
+    NetworkSubsystemFailed,
+
+    Unexpected,
+};
+
+/// socket is assumed to be in blocking mode, bound/connected.  Returns
+pub fn readFull(sock: std.posix.socket_t, buf: []u8) ReadFullError!void {
+    std.debug.assert(buf.len > 0);
+    var total_received: usize = 0;
+    while (total_received < buf.len) {
+        const last_received = (SocketReader{ .context = sock }).read(buf[total_received..]) catch |err| switch (err) {
+            error.WouldBlock => unreachable, // socket should be blocking
+            error.SocketNotBound => unreachable,
+            error.MessageTooBig => unreachable, // shouldn't apply to stream sockets
+            error.ConnectionTimedOut => unreachable, // we're already connected
+            error.ConnectionRefused => return error.ConnectionRefused,
+            error.ConnectionResetByPeer => return error.ConnectionResetByPeer,
+            error.SystemResources => return error.SystemResources,
+            error.SocketNotConnected => return error.SocketNotConnected,
+            error.NetworkSubsystemFailed => return error.NetworkSubsystemFailed,
+            error.Unexpected => return error.Unexpected,
+        };
+        if (last_received == 0) return error.EndOfStream;
+        total_received += last_received;
+    }
+}
+
 const SendError = error{
     BrokenPipe,
     ConnectionResetByPeer,
@@ -147,6 +181,8 @@ pub const Connection = struct {
 
     // TODO: we'll need some better mechanism for ids so we can't run out
     next_id_offset: u32 = 0,
+
+    keymap: if (support_key_events) x11.keymap.Full else void = if (support_key_events) .initVoid() else undefined,
 
     dbe: Extension(x11.dbe.name.nativeSlice()) = .not_queried,
 
@@ -268,11 +304,8 @@ pub fn connect(allocator: std.mem.Allocator, options: zin.ConnectOptions) zin.Co
         .buf = try allocator.allocWithOptions(u8, setup_reply_len, 4, null),
     };
     log.debug("connect setup reply is {} bytes", .{connect_setup.buf.len});
-    const reader = SocketReader{ .context = sock };
-    x11.readFull(reader, connect_setup.buf) catch |e| std.debug.panic(
-        "read x11 socket failed with {s}",
-        .{@errorName(e)},
-    );
+    // const reader = SocketReader{ .context = sock };
+    try readFull(sock, connect_setup.buf);
 
     const fixed = connect_setup.fixed();
     inline for (@typeInfo(@TypeOf(fixed.*)).@"struct".fields) |field| {
@@ -299,13 +332,67 @@ pub fn connect(allocator: std.mem.Allocator, options: zin.ConnectOptions) zin.Co
     inline for (@typeInfo(@TypeOf(screen.*)).@"struct".fields) |field| {
         log.debug("SCREEN 0| {s}: {any}", .{ field.name, @field(screen, field.name) });
     }
+
     global.connection = Connection{ .sock = sock, .setup = connect_setup, .screen = screen };
+
+    if (support_key_events) {
+        const keycode_count: u8 = fixed.max_keycode - fixed.min_keycode + 1;
+
+        {
+            var msg: [x11.get_keyboard_mapping.len]u8 = undefined;
+            x11.get_keyboard_mapping.serialize(&msg, fixed.min_keycode, keycode_count);
+            try global.connection.sendOne(&msg);
+        }
+
+        var header: [32]u8 align(4) = undefined;
+        try readFull(sock, &header);
+
+        {
+            const generic: *x11.ServerMsg.Generic = @ptrCast(&header);
+            // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+            // TODO: this shouldn't be a panic
+            if (generic.kind != .reply) std.debug.panic(
+                "GetKeyboardMapping failed, expected 'reply' but got '{}': {}",
+                .{
+                    generic.kind,
+                    generic,
+                },
+            );
+        }
+
+        const reply: *x11.ServerMsg.GetKeyboardMapping = @ptrCast(&header);
+        const syms_len = x11.readIntNative(u32, header[4..]);
+        std.debug.assert(@as(usize, reply.syms_per_code) * @as(usize, keycode_count) == syms_len);
+
+        const syms = try scratch.alloc(u32, syms_len);
+        errdefer scratch.free(syms);
+
+        try readFull(sock, @as([*]u8, @ptrCast(syms.ptr))[0 .. syms_len * 4]);
+
+        global.connection.keymap.load(fixed.min_keycode, .{
+            .keycode_count = keycode_count,
+            .syms_per_code = reply.syms_per_code,
+            .syms = syms,
+        }) catch |err| switch (err) {
+            error.MinKeycodeTooSmall,
+            error.KeycodeCountTooBig,
+            error.KeyMap0SymsPerCode,
+            => {
+                log.err("invalid keymap from server ({s})", .{@errorName(err)});
+                return error.BadKeymap;
+            },
+        };
+    }
 }
 pub fn disconnect(allocator: std.mem.Allocator) void {
     allocator.free(global.connection.setup.buf);
     x11.disconnect(global.connection.sock);
     global.connection = undefined;
 }
+
+// !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+// TODO: this shouldn't be hardcoded, instead, it should be based on the app config
+const support_key_events = true;
 
 fn connectSetupAuth(
     display_num: ?x11.DisplayNum,
@@ -557,7 +644,7 @@ const StaticWindowAndTimerId = blk: {
         field.* = .{
             .name = window_id_field.name,
             .type = TimerId,
-            .alignment = @alignOf(TimerId),
+            .alignment = if (TimerId == noreturn) 0 else @alignOf(TimerId),
         };
     }
     break :blk @Type(std.builtin.Type{
@@ -767,11 +854,90 @@ fn createWindow(
     }
 }
 
-pub const VirtualKey = enum {
-    n,
+pub const VirtualKey = enum(u16) {
+    backspace = @intFromEnum(x11.charset.Combined.kbd_backspace_back_space_back_char),
+    tab = @intFromEnum(x11.charset.Combined.kbd_tab),
+    @"return" = @intFromEnum(x11.charset.Combined.kbd_return_enter),
+
+    shift_left = @intFromEnum(x11.charset.Combined.kbd_left_shift),
+    shift_right = @intFromEnum(x11.charset.Combined.kbd_right_shift),
+    control_left = @intFromEnum(x11.charset.Combined.kbd_left_control),
+    control_right = @intFromEnum(x11.charset.Combined.kbd_right_control),
+    alt_left = @intFromEnum(x11.charset.Combined.kbd_left_alt),
+    alt_right = @intFromEnum(x11.charset.Combined.kbd_right_alt),
+    pause = @intFromEnum(x11.charset.Combined.kbd_pause_hold),
+    caps_lock = @intFromEnum(x11.charset.Combined.kbd_caps_lock),
+    escape = @intFromEnum(x11.charset.Combined.kbd_escape),
+    page_up = @intFromEnum(x11.charset.Combined.kbd_page_up),
+    page_down = @intFromEnum(x11.charset.Combined.kbd_page_down),
+    end = @intFromEnum(x11.charset.Combined.kbd_end_eol),
+    home = @intFromEnum(x11.charset.Combined.kbd_home),
+    left = @intFromEnum(x11.charset.Combined.kbd_left),
+    up = @intFromEnum(x11.charset.Combined.kbd_up),
+    right = @intFromEnum(x11.charset.Combined.kbd_right),
+    down = @intFromEnum(x11.charset.Combined.kbd_down),
+    print_screen = @intFromEnum(x11.charset.Combined._3170__3270_printscreen),
+    insert = @intFromEnum(x11.charset.Combined.kbd_insert_insert_here),
+    delete = @intFromEnum(x11.charset.Combined.kbd_delete_rubout),
+    super_left = @intFromEnum(x11.charset.Combined.kbd_left_super),
+    super_right = @intFromEnum(x11.charset.Combined.kbd_right_super),
+
+    numpad0 = @intFromEnum(x11.charset.Combined.kbd_keypad_digit_zero),
+    numpad1 = @intFromEnum(x11.charset.Combined.kbd_keypad_digit_one),
+    numpad2 = @intFromEnum(x11.charset.Combined.kbd_keypad_digit_two),
+    numpad3 = @intFromEnum(x11.charset.Combined.kbd_keypad_digit_three),
+    numpad4 = @intFromEnum(x11.charset.Combined.kbd_keypad_digit_four),
+    numpad5 = @intFromEnum(x11.charset.Combined.kbd_keypad_digit_five),
+    numpad6 = @intFromEnum(x11.charset.Combined.kbd_keypad_digit_six),
+    numpad7 = @intFromEnum(x11.charset.Combined.kbd_keypad_digit_seven),
+    numpad8 = @intFromEnum(x11.charset.Combined.kbd_keypad_digit_eight),
+    numpad9 = @intFromEnum(x11.charset.Combined.kbd_keypad_digit_nine),
+
+    multiply = @intFromEnum(x11.charset.Combined.kbd_keypad_multiplication_sign_asterisk),
+    add = @intFromEnum(x11.charset.Combined.kbd_keypad_plus_sign),
+    separator = @intFromEnum(x11.charset.Combined.kbd_keypad_separator_comma),
+    subtract = @intFromEnum(x11.charset.Combined.kbd_keypad_minus_sign_hyphen),
+    decimal = @intFromEnum(x11.charset.Combined.kbd_keypad_decimal_point_period),
+
+    f1 = @intFromEnum(x11.charset.Combined.kbd_f1),
+    f2 = @intFromEnum(x11.charset.Combined.kbd_f2),
+    f3 = @intFromEnum(x11.charset.Combined.kbd_f3),
+    f4 = @intFromEnum(x11.charset.Combined.kbd_f4),
+    f5 = @intFromEnum(x11.charset.Combined.kbd_f5),
+    f6 = @intFromEnum(x11.charset.Combined.kbd_f6),
+    f7 = @intFromEnum(x11.charset.Combined.kbd_f7),
+    f8 = @intFromEnum(x11.charset.Combined.kbd_f8),
+    f9 = @intFromEnum(x11.charset.Combined.kbd_f9),
+    f10 = @intFromEnum(x11.charset.Combined.kbd_f10),
+    f11 = @intFromEnum(x11.charset.Combined.kbd_f11_l1),
+    f12 = @intFromEnum(x11.charset.Combined.kbd_f12_l2),
+    f13 = @intFromEnum(x11.charset.Combined.kbd_f13_l3),
+    f14 = @intFromEnum(x11.charset.Combined.kbd_f14_l4),
+    f15 = @intFromEnum(x11.charset.Combined.kbd_f15_l5),
+    f16 = @intFromEnum(x11.charset.Combined.kbd_f16_l6),
+    f17 = @intFromEnum(x11.charset.Combined.kbd_f17_l7),
+    f18 = @intFromEnum(x11.charset.Combined.kbd_f18_l8),
+    f19 = @intFromEnum(x11.charset.Combined.kbd_f19_l9),
+    f20 = @intFromEnum(x11.charset.Combined.kbd_f20_l10),
+    f21 = @intFromEnum(x11.charset.Combined.kbd_f21_r1),
+    f22 = @intFromEnum(x11.charset.Combined.kbd_f22_r2),
+    f23 = @intFromEnum(x11.charset.Combined.kbd_f23_r3),
+    f24 = @intFromEnum(x11.charset.Combined.kbd_f24_r4),
+
+    numlock = @intFromEnum(x11.charset.Combined.kbd_num_lock),
+    scroll_lock = @intFromEnum(x11.charset.Combined.kbd_scroll_lock),
+
+    _,
 };
-pub const ScanCode = void;
+pub const ScanCode = u8;
 pub const Coord = i16;
+
+pub fn asciiFromKeysym(vk: VirtualKey) ?u8 {
+    return switch (@intFromEnum(vk)) {
+        ' '...'~' => |a| @intCast(a),
+        else => null,
+    };
+}
 
 fn mouseButtonFromMsg(detail: u8) zin.MouseButtonId {
     return switch (detail) {
@@ -782,7 +948,7 @@ fn mouseButtonFromMsg(detail: u8) zin.MouseButtonId {
     };
 }
 
-fn drawStaticWindow(comptime window_id: zin.StaticWindowId) enum { not_created, success } {
+fn drawStaticWindow(comptime window_id: zin.StaticWindowId) SendError!enum { not_created, success } {
     switch (global.static_window_common_states[@intFromEnum(window_id)]) {
         .not_created => return .not_created,
         .created => {},
@@ -814,12 +980,18 @@ fn drawStaticWindow(comptime window_id: zin.StaticWindowId) enum { not_created, 
             break :blk false;
         },
     };
-    staticCallback(window_id)(.{ .draw = .{
-        .window = window,
-        .use_back_buffer = use_back_buffer,
-        .client_size = if (config.data().window_size_events) global.staticWindowCustomState(window_id).client_size else {},
-        .background = if (comptime config.data().dynamic_background) config.data().background else {},
-    } });
+
+    {
+        var maybe_send_error: ?SendError = null;
+        staticCallback(window_id)(.{ .draw = .{
+            .error_ref = &maybe_send_error,
+            .window = window,
+            .use_back_buffer = use_back_buffer,
+            .client_size = if (config.data().window_size_events) global.staticWindowCustomState(window_id).client_size else {},
+            .background = if (comptime config.data().dynamic_background) config.data().background else {},
+        } });
+        if (maybe_send_error) |e| return e;
+    }
 
     switch (window_id.getConfig().x11.render_kind) {
         .immediate => {},
@@ -841,7 +1013,7 @@ fn drawStaticWindow(comptime window_id: zin.StaticWindowId) enum { not_created, 
     return .success;
 }
 
-pub fn x11UpdateWindows() usize {
+pub fn x11UpdateWindows() SendError!usize {
     var update_count: usize = 0;
 
     for (&global.static_window_common_states, 0..) |*window, static_window_id_raw| switch (window.*) {
@@ -850,7 +1022,7 @@ pub fn x11UpdateWindows() usize {
             if (created.damaged) {
                 const static_window_id: zin.StaticWindowId = @enumFromInt(static_window_id_raw);
                 switch (static_window_id) {
-                    inline else => |window_id| switch (drawStaticWindow(window_id)) {
+                    inline else => |window_id| switch (try drawStaticWindow(window_id)) {
                         .not_created => unreachable,
                         .success => {},
                     },
@@ -943,7 +1115,7 @@ pub fn mainLoop() !void {
         // we prioritize socket messagse over timeout, so we only start checking the
         // timeout if the socket has no messages
         while (true) {
-            _ = x11UpdateWindows();
+            _ = try x11UpdateWindows();
 
             switch (try pollSocket(global.connection.sock, 0)) {
                 .ready => break,
@@ -1009,7 +1181,17 @@ pub fn mainLoop() !void {
     }
 }
 pub fn quitMainLoop() void {
-    @panic("todo");
+    std.posix.shutdown(global.connection.sock, .both) catch |err| switch (err) {
+        error.BlockingOperationInProgress => unreachable,
+        error.SystemResources,
+        error.NetworkSubsystemFailed,
+        error.Unexpected,
+        => |e| std.debug.panic("shutdown failed with {s}", .{@errorName(e)}),
+        error.ConnectionResetByPeer,
+        error.SocketNotConnected,
+        error.ConnectionAborted,
+        => {},
+    };
 }
 
 pub fn x11HandleMessage(msg_buf: []align(4) u8) !void {
@@ -1053,10 +1235,36 @@ pub fn x11HandleMessage(msg_buf: []align(4) u8) !void {
             return error.TodoHandleReplyMessage;
         },
         .key_press => |msg| {
-            log.info("key_press: keycode={}", .{msg.keycode});
+            if (global.connection.staticWindowFromX11Id(msg.event)) |w| switch (w) {
+                inline else => |window_id| {
+                    const config = zin.WindowConfig{ .static = window_id };
+                    if (config.data().key_events) {
+                        if (global.connection.keymap.getKeysym(msg.keycode, msg.state.mod())) |keysym| {
+                            staticCallback(window_id)(.{ .key = keyFromX11(.down, msg.keycode, msg.state, keysym) });
+                        } else |err| switch (err) {
+                            error.KeycodeTooSmall => {
+                                log.err("KeyPress keycode {} is too small", .{msg.keycode});
+                            },
+                        }
+                    }
+                },
+            } else @panic("todo: motion_notify on dynamic windows");
         },
         .key_release => |msg| {
-            log.info("key_release: keycode={}", .{msg.keycode});
+            if (global.connection.staticWindowFromX11Id(msg.event)) |w| switch (w) {
+                inline else => |window_id| {
+                    const config = zin.WindowConfig{ .static = window_id };
+                    if (config.data().key_events) {
+                        if (global.connection.keymap.getKeysym(msg.keycode, msg.state.mod())) |keysym| {
+                            staticCallback(window_id)(.{ .key = keyFromX11(.up, msg.keycode, msg.state, keysym) });
+                        } else |err| switch (err) {
+                            error.KeycodeTooSmall => {
+                                log.err("KeyRelease keycode {} is too small", .{msg.keycode});
+                            },
+                        }
+                    }
+                },
+            } else @panic("todo: motion_notify on dynamic windows");
         },
         .button_press => |msg| {
             const button_id = mouseButtonFromMsg(msg.detail);
@@ -1119,7 +1327,7 @@ pub fn x11HandleMessage(msg_buf: []align(4) u8) !void {
         },
         .expose => |msg| {
             if (global.connection.staticWindowFromX11Id(msg.window)) |w| switch (w) {
-                inline else => |window_id| switch (drawStaticWindow(window_id)) {
+                inline else => |window_id| switch (try drawStaticWindow(window_id)) {
                     .not_created => {}, // ok means we destroyed this window
                     .success => {},
                 },
@@ -1159,12 +1367,26 @@ pub fn x11HandleMessage(msg_buf: []align(4) u8) !void {
     }
 }
 
+fn keyFromX11(direction: enum { up, down }, keycode: u8, mask: x11.KeyButtonMask, keysym: x11.charset.Combined) zin.Key {
+    return .{
+        .kind = switch (direction) {
+            .up => .up,
+            .down => .down,
+        },
+        .vk = @enumFromInt(@intFromEnum(keysym)),
+        .scan_code = keycode,
+        .win32_extended = {},
+        .x11_mask = mask,
+    };
+}
+
 fn giveup(what: []const u8, e: anyerror) noreturn {
     std.debug.panic("{s} failed with {s}", .{ what, @errorName(e) });
 }
 
 pub fn Draw(window_config: zin.WindowConfig) type {
     return struct {
+        error_ref: *?SendError,
         window: x11.Window,
         use_back_buffer: switch (window_config.data().x11.render_kind) {
             .immediate => void,
@@ -1193,6 +1415,8 @@ pub fn Draw(window_config: zin.WindowConfig) type {
         }
 
         pub fn clear(self: *const Self) void {
+            if (self.error_ref.* != null) return;
+
             switch (window_config.data().x11.render_kind) {
                 .immediate => {},
                 .double_buffered => if (self.use_back_buffer) return,
@@ -1219,6 +1443,8 @@ pub fn Draw(window_config: zin.WindowConfig) type {
         }
 
         pub fn rect(self: *const Self, r: zin.Rect, rgb: zin.Rgb8) void {
+            if (self.error_ref.* != null) return;
+
             var messages: [x11.change_gc.max_len + x11.poly_fill_rectangle.getLen(1)]u8 = undefined;
             const after_change_gc: usize = x11.change_gc.serialize(&messages, gcFromWindow(self.window), .{
                 .foreground = x11FromRgb(rgb),
@@ -1239,6 +1465,8 @@ pub fn Draw(window_config: zin.WindowConfig) type {
         }
 
         pub fn text(self: *const Self, t: []const u8, x: i32, y: i32, rgb: zin.Rgb8) void {
+            if (self.error_ref.* != null) return;
+
             const slice = x11.SliceWithMaxLen(u8, [*]const u8, 254){
                 .ptr = t.ptr,
                 .len = std.math.cast(u8, t.len) orelse std.debug.panic("TODO: handle text with {} bytes", .{t.len}),
@@ -1262,7 +1490,10 @@ pub fn Draw(window_config: zin.WindowConfig) type {
                 .y = std.math.cast(i16, y) orelse std.debug.panic("TODO: what to do with y value of {}", .{y}),
             });
             const total_len: usize = after_change_gc + x11.poly_text8.getLen(&items);
-            global.connection.sendMultiple(2, messages[0..total_len]) catch |e| giveup("send ImageText", e);
+            global.connection.sendMultiple(2, messages[0..total_len]) catch |e| {
+                self.error_ref.* = e;
+                return;
+            };
         }
     };
 }

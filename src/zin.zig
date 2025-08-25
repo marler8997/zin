@@ -48,6 +48,7 @@ pub const ConnectError = error{
 
     BadXauthEnv,
     XauthEnvFileNotFound,
+    BadKeymap,
 
     AccessDenied,
     SystemResources,
@@ -55,10 +56,12 @@ pub const ConnectError = error{
     SymLinkLoop,
     FileBusy,
 
+    EndOfStream,
     UnknownHostName,
     ConnectionRefused,
-    ConnectResetByPeer,
+    ConnectionResetByPeer,
     BrokenPipe,
+    SocketNotConnected,
     NetworkSubsystemFailed,
 
     Unexpected,
@@ -126,11 +129,100 @@ pub const Win32ExtendedKey = switch (builtin.os.tag) {
     .windows => bool,
     else => void,
 };
+pub const X11KeyMask = switch (platform_kind) {
+    .x11 => platform.x11.KeyButtonMask,
+    else => void,
+};
+
+pub const UnicodeKeyboardState = struct {
+    array: switch (platform_kind) {
+        .win32 => [256]u8,
+        .x11, .macos => void,
+    },
+
+    pub fn init() UnicodeKeyboardState {
+        return switch (platform_kind) {
+            .win32 => {
+                var result: UnicodeKeyboardState = .{ .array = undefined };
+                if (0 == platform.win32.GetKeyboardState(&result.array)) platform.win32.panicWin32(
+                    "GetKeyboardState",
+                    platform.win32.GetLastError(),
+                );
+                return result;
+            },
+            .x11, .macos => .{ .array = {} },
+        };
+    }
+
+    pub fn ref(self: *UnicodeKeyboardState) UnicodeKeyboardStateRef {
+        return switch (platform_kind) {
+            .win32 => &self.array,
+            .x11, .macos => {},
+        };
+    }
+};
+pub const UnicodeKeyboardStateRef = switch (platform_kind) {
+    .win32 => *[256]u8,
+    .x11, .macos => void,
+};
+
+pub const max_wtf16_per_key = 16;
+// I think it's max 4 bytes per wtf16 character?
+pub const max_utf8_per_key = max_wtf16_per_key * 4;
+
 pub const Key = struct {
     kind: enum { up, down, down_repeat },
     vk: VirtualKey,
     scan_code: ScanCode,
     win32_extended: Win32ExtendedKey,
+    x11_mask: X11KeyMask,
+
+    pub fn utf8(
+        key: *const Key,
+        keyboard_state: UnicodeKeyboardStateRef,
+    ) std.BoundedArray(u8, max_utf8_per_key) {
+        switch (platform_kind) {
+            .win32 => {
+                var char_buf: [max_wtf16_per_key + 1]u16 = undefined;
+
+                // release control key when getting the unicode character of this key
+                const save_control_state = keyboard_state[@intFromEnum(platform.win32.VK_CONTROL)];
+                keyboard_state[@intFromEnum(platform.win32.VK_CONTROL)] = 0;
+                const unicode_result = platform.win32.ToUnicode(
+                    @intFromEnum(key.vk),
+                    @intFromEnum(key.scan_code),
+                    keyboard_state,
+                    @ptrCast(&char_buf),
+                    max_wtf16_per_key,
+                    0,
+                );
+                keyboard_state[@intFromEnum(platform.win32.VK_CONTROL)] = save_control_state;
+                if (unicode_result < 0) return .{ .len = 0, .buffer = undefined }; // dead key
+                if (unicode_result > max_wtf16_per_key) {
+                    for (char_buf[0..@intCast(unicode_result)], 0..) |codepoint, i| {
+                        std.log.err("UNICODE[{}] 0x{x} {d}", .{ i, codepoint, unicode_result });
+                    }
+                    std.debug.panic("ToUnicode returned {} characters", .{unicode_result});
+                }
+                var result: std.BoundedArray(u8, max_utf8_per_key) = .{ .len = 0, .buffer = undefined };
+                const len = std.unicode.utf16LeToUtf8(&result.buffer, char_buf[0..@intCast(unicode_result)]) catch @panic("ToUnicode generated invalid utf16le");
+                std.debug.assert(len <= max_utf8_per_key);
+                result.len = len;
+                return result;
+            },
+            .x11 => {
+                if (x11.asciiFromKeysym(key.vk)) |ascii| {
+                    var result: std.BoundedArray(u8, max_utf8_per_key) = .{ .len = 1, .buffer = undefined };
+                    result.buffer[0] = ascii;
+                    return result;
+                }
+                return .{};
+            },
+            .macos => {
+                @panic("todo");
+            },
+        }
+    }
 };
 
 pub const XY = struct {
