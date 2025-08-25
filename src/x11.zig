@@ -1133,7 +1133,14 @@ pub fn x11HandleMessage(msg_buf: []align(4) u8) !void {
             log.info("todo: server msg {}", .{msg});
             return error.UnhandledServerMsg;
         },
-        .destroy_notify => @panic("todo: implement handler for destroy_notify"),
+        .destroy_notify => |msg| {
+            if (global.connection.staticWindowFromX11Id(msg.window)) |window_id| {
+                switch (global.static_window_common_states[@intFromEnum(window_id)]) {
+                    .not_created => {}, // ok, means the user must have closed the window
+                    .created => @panic("todo: notify app that a window was destroyed"),
+                }
+            } else @panic("todo: expose on dynamic windows");
+        },
         .unmap_notify => {}, // ignore for now
         .map_notify => {}, // ignore for now
         .reparent_notify => {}, // ignore
