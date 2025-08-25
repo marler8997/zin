@@ -226,10 +226,10 @@ pub const Connection = struct {
     fn sendOneOrPanic(self: *Connection, data: []const u8) void {
         self.sendOne(data) catch |e| std.debug.panic("send over X11 socket failed with {s}", .{@errorName(e)});
     }
-    fn staticWindowId(self: *const Connection, id: zin.StaticWindowId) x11.Window {
+    pub fn staticWindowId(self: *const Connection, id: zin.StaticWindowId) x11.Window {
         return self.setup.fixed().resource_id_base.add(@as(u32, @intFromEnum(id)) * fixed_ids_per_window).window();
     }
-    fn staticWindowGc(self: *const Connection, id: zin.StaticWindowId) x11.GraphicsContext {
+    pub fn staticWindowGc(self: *const Connection, id: zin.StaticWindowId) x11.GraphicsContext {
         return self.setup.fixed().resource_id_base.add(@as(u32, @intFromEnum(id)) * fixed_ids_per_window + 1).graphicsContext();
     }
 
