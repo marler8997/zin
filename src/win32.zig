@@ -622,7 +622,7 @@ fn makeWndProc(
                     }
                     return 0;
                 },
-                win32.WM_KEYDOWN => {
+                win32.WM_KEYDOWN, win32.WM_SYSKEYDOWN => {
                     if (comptime config.data().key_events) switch (config) {
                         .static => class.callback(.{ .key = keyFromWin32(.down, wparam, lparam) }),
                         .dynamic => class.callback(
@@ -632,7 +632,7 @@ fn makeWndProc(
                     };
                     return 0;
                 },
-                win32.WM_KEYUP => {
+                win32.WM_KEYUP, win32.WM_SYSKEYUP => {
                     if (comptime config.data().key_events) switch (config) {
                         .static => class.callback(.{ .key = keyFromWin32(.up, wparam, lparam) }),
                         .dynamic => class.callback(
