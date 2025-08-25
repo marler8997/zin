@@ -622,6 +622,10 @@ fn makeWndProc(
                     }
                     return 0;
                 },
+                win32.WM_MENUCHAR => {
+                    // Return MAKELRESULT(0, MNC_CLOSE) to close menu and prevent beep
+                    return 0 | (@as(win32.LRESULT, 1) << 16); // MNC_CLOSE = 1
+                },
                 win32.WM_KEYDOWN, win32.WM_SYSKEYDOWN => {
                     if (comptime config.data().key_events) switch (config) {
                         .static => class.callback(.{ .key = keyFromWin32(.down, wparam, lparam) }),
