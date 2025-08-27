@@ -176,6 +176,8 @@ pub const Connection = struct {
     sock: std.posix.socket_t,
     setup: x11.ConnectSetup,
     screen: *align(4) x11.Screen,
+    dpi_scale_x: f32,
+    dpi_scale_y: f32,
 
     sequence: u16 = 0,
 
@@ -333,7 +335,14 @@ pub fn connect(allocator: std.mem.Allocator, options: zin.ConnectOptions) zin.Co
         log.debug("SCREEN 0| {s}: {any}", .{ field.name, @field(screen, field.name) });
     }
 
-    global.connection = Connection{ .sock = sock, .setup = connect_setup, .screen = screen };
+    global.connection = Connection{
+        .sock = sock,
+        .setup = connect_setup,
+        .screen = screen,
+        .dpi_scale_x = dpiScaleFromPixelMm(screen.pixel_width, screen.mm_width),
+        .dpi_scale_y = dpiScaleFromPixelMm(screen.pixel_height, screen.mm_height),
+    };
+    log.debug("DPI {d:.2}x{d:.2}", .{ global.connection.dpi_scale_x, global.connection.dpi_scale_y });
 
     if (support_key_events) {
         const keycode_count: u8 = fixed.max_keycode - fixed.min_keycode + 1;
@@ -388,6 +397,11 @@ pub fn disconnect(allocator: std.mem.Allocator) void {
     allocator.free(global.connection.setup.buf);
     x11.disconnect(global.connection.sock);
     global.connection = undefined;
+}
+
+fn dpiScaleFromPixelMm(pixels: u16, millimeters: u16) f32 {
+    const mm_per_inch = 25.4;
+    return @as(f32, @floatFromInt(pixels)) * mm_per_inch / 96.0 / @as(f32, @floatFromInt(millimeters));
 }
 
 // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
@@ -699,7 +713,7 @@ pub fn staticWindow(window_id: zin.StaticWindowId) type {
         pub fn create(opt: zin.CreateWindowOptions) zin.CreateWindowError!void {
             //std.debug.assert(global.static_windows[@intFromEnum(window_id)] == null);
             const bg = x11FromRgb(config.data().background);
-            const size = windowSizeFromInit(opt.size);
+            const size = windowPixelSizeFromInit(opt.size, global.connection.dpi_scale_x, global.connection.dpi_scale_y);
             try createWindow(&config.data(), size, bg, global.connection.staticWindowId(window_id));
             global.static_window_common_states[@intFromEnum(window_id)] = .{ .created = .{
                 .damaged = false,
@@ -773,11 +787,21 @@ pub fn backBufferFromWindow(id: x11.Window) x11.Drawable {
     return @enumFromInt(@intFromEnum(id) + 2);
 }
 
-fn windowSizeFromInit(init: zin.WindowSizeInit) zin.XY {
+fn windowPixelSizeFromInit(init: zin.WindowSizeInit, dpi_scale_x: f32, dpi_scale_y: f32) zin.XY {
     return switch (init) {
         .default => @panic("todo"),
-        .client => |s| s,
-        .window => |s| s,
+        // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+        // TODO: the client size is not right
+        .client_pixels => |s| s,
+        .client_points => |s| .{
+            .x = zin.scale(i32, s.x, dpi_scale_x),
+            .y = zin.scale(i32, s.y, dpi_scale_y),
+        },
+        .window_pixels => |s| s,
+        .window_points => |s| .{
+            .x = zin.scale(i32, s.x, dpi_scale_x),
+            .y = zin.scale(i32, s.y, dpi_scale_y),
+        },
     };
 }
 
@@ -1409,9 +1433,9 @@ pub fn Draw(window_config: zin.WindowConfig) type {
             };
         }
 
-        pub fn getDpiScale(self: *const Self) f32 {
+        pub fn getDpiScale(self: *const Self) struct { x: f32, y: f32 } {
             _ = self;
-            return 1.0;
+            return .{ .x = global.connection.dpi_scale_x, .y = global.connection.dpi_scale_y };
         }
 
         pub fn clear(self: *const Self) void {

@@ -183,8 +183,10 @@ fn createWindow(
         .size = switch (opt.size) {
             // TODO: how is default actually supposed work?
             .default => .{ .width = 100, .height = 100 },
-            .client => |s| .{ .width = @floatFromInt(s.x), .height = @floatFromInt(s.y) },
-            .window => @panic("todo"),
+            .client_pixels => |s| .{ .width = @floatFromInt(s.x), .height = @floatFromInt(s.y) },
+            .client_points => |s| .{ .width = @floatFromInt(s.x), .height = @floatFromInt(s.y) },
+            .window_pixels => @panic("todo"),
+            .window_points => @panic("todo"),
         },
     };
     const style_mask: NSWindow.StyleMask = .{
@@ -240,9 +242,9 @@ pub fn Draw(window_config: zin.WindowConfig) type {
         ctx: *c.CGContext,
         client_size: zin.XY,
 
-        pub fn getDpiScale(self: *const Self) f32 {
+        pub fn getDpiScale(self: *const Self) struct { x: f32, y: f32 } {
             _ = self;
-            return 1; // todo
+            return .{ .x = 1, .y = 1 }; // todo
         }
 
         pub fn clear(self: *const Self) void {

@@ -251,8 +251,10 @@ fn createWindow(class: WindowClass, opt: *const zin.CreateWindowOptions) zin.Cre
     const create_size: zin.XY = blk: {
         break :blk switch (opt.size) {
             .default => .{ .x = win32.CW_USEDEFAULT, .y = win32.CW_USEDEFAULT },
-            .client => |s| s, // we'll adjust the size below
-            .window => |s| s,
+            .client_pixels => |s| s,
+            .client_points => |s| s, // we'll adjust the size below (after we know the REAL DPI)
+            .window_pixels => |s| s,
+            .window_points => |s| s, // we'll adjust the size below (after we know the REAL DPI)
         };
     };
     const create_pos: zin.XY = if (opt.pos) |pos|
@@ -278,23 +280,38 @@ fn createWindow(class: WindowClass, opt: *const zin.CreateWindowOptions) zin.Cre
         win32.panicWin32("CreateWindow", win32.GetLastError());
     errdefer win32.destroyWindow(hwnd);
 
-    switch (opt.size) {
-        .default => {},
-        .client => |client_size| {
-            const dpi = win32.dpiFromHwnd(hwnd);
-            const window_size = windowSizeFromClient(client_size, style, style_ex, dpi);
-            if (0 == win32.SetWindowPos(
-                hwnd,
-                null,
-                0,
-                0,
-                window_size.x,
-                window_size.y,
-                .{ .NOACTIVATE = 1, .NOMOVE = 1, .NOZORDER = 1 },
-            )) win32.panicWin32("SetWindowPos", win32.GetLastError());
+    const dpi = win32.dpiFromHwnd(hwnd);
+    const maybe_window_size: ?zin.XY = blk: switch (opt.size) {
+        .default => break :blk null,
+        .client_pixels => |client_size| break :blk windowSizeFromClient(client_size, style, style_ex, dpi),
+        .client_points => |client_size| {
+            const dpi_scale: f32 = @as(f32, @floatFromInt(dpi)) / 96.0;
+            break :blk windowSizeFromClient(.{
+                .x = zin.scale(i32, client_size.x, dpi_scale),
+                .y = zin.scale(i32, client_size.y, dpi_scale),
+            }, style, style_ex, dpi);
         },
-        .window => {},
+        .window_pixels => |window_size| break :blk window_size,
+        .window_points => |window_size| {
+            const dpi_scale: f32 = @as(f32, @floatFromInt(dpi)) / 96.0;
+            break :blk .{
+                .x = zin.scale(i32, window_size.x, dpi_scale),
+                .y = zin.scale(i32, window_size.y, dpi_scale),
+            };
+        },
+    };
+    if (maybe_window_size) |window_size| {
+        if (0 == win32.SetWindowPos(
+            hwnd,
+            null,
+            0,
+            0,
+            window_size.x,
+            window_size.y,
+            .{ .NOACTIVATE = 1, .NOMOVE = 1, .NOZORDER = 1 },
+        )) win32.panicWin32("SetWindowPos", win32.GetLastError());
     }
+
     return hwnd;
 }
 
@@ -772,8 +789,9 @@ pub fn Draw(window_config: zin.WindowConfig) type {
 
         const Self = @This();
 
-        pub fn getDpiScale(self: *const Self) f32 {
-            return @as(f32, @floatFromInt(win32.dpiFromHwnd(self.hwnd))) / 96.0;
+        pub fn getDpiScale(self: *const Self) struct { x: f32, y: f32 } {
+            const scale: f32 = @as(f32, @floatFromInt(win32.dpiFromHwnd(self.hwnd))) / 96.0;
+            return .{ .x = scale, .y = scale };
         }
 
         pub fn clear(self: *const Self) void {

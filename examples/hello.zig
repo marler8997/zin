@@ -66,9 +66,10 @@ pub fn main() !void {
         .win32_icon_small = icons.small,
     });
     defer zin.staticWindow(.main).unregisterClass();
+
     try zin.staticWindow(.main).create(.{
         .title = "Hello Example",
-        .size = .{ .client = .{ .x = 300, .y = 200 } },
+        .size = .{ .client_points = .{ .x = 300, .y = 200 } },
         .pos = null,
     });
     // TODO: not working for x11 yet, closing the window
@@ -100,8 +101,12 @@ fn callback(cb: zin.Callback(.{ .static = .main })) void {
                 .x = @intFromFloat(@round(@as(f32, @floatFromInt(size.x)) * global.text_position)),
                 .y = @intFromFloat(@round(@as(f32, @floatFromInt(size.y)) * global.text_position)),
             };
-            d.rect(.ltwh(animate.x, size.y - animate.y, 10, 10), .red);
-            d.text("Press 'n' to create a new window.", 10, 50, .white);
+            const dpi_scale = d.getDpiScale();
+            const rect_size = zin.scale(i32, 10, dpi_scale.x);
+            d.rect(.ltwh(animate.x, size.y - animate.y, rect_size, rect_size), .red);
+            const margin_left = zin.scale(i32, 10, dpi_scale.x);
+            const top = zin.scale(i32, 50, dpi_scale.y);
+            d.text("Press 'n' to create a new window.", margin_left, top, .white);
             d.text("Weeee!!!", animate.x, animate.y, .white);
             if (global.mouse_position) |p| {
                 d.text("Mouse", p.x, p.y, .white);
@@ -124,7 +129,7 @@ fn callback(cb: zin.Callback(.{ .static = .main })) void {
                 }
                 const w = zin.createDynamicWindow(global.class_extra.?, .{
                     .title = "Extra Window!",
-                    .size = .{ .window = .{ .x = 200, .y = 150 } },
+                    .size = .{ .window_points = .{ .x = 200, .y = 150 } },
                     .pos = null,
                 }) catch |e| std.debug.panic("createWindow failed with {s}", .{@errorName(e)});
                 // TODO: place the new window on top of the current

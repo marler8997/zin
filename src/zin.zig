@@ -404,8 +404,10 @@ pub const registerDynamicWindowClass = platform.registerDynamicWindowClass;
 
 pub const WindowSizeInit = union(enum) {
     default,
-    client: XY,
-    window: XY,
+    client_pixels: XY,
+    client_points: XY,
+    window_pixels: XY,
+    window_points: XY,
 };
 pub const CreateWindowOptions = struct {
     title: [:0]const u8,
