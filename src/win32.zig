@@ -783,6 +783,17 @@ fn colorrefFromRgb8(rgb8: zin.Rgb8) u32 {
         (@as(u32, rgb8.r) << 0);
 }
 
+comptime {
+    std.debug.assert(@sizeOf(PolygonPoint) == @sizeOf(win32.POINT));
+    std.debug.assert(@alignOf(PolygonPoint) == @alignOf(win32.POINT));
+}
+pub const PolygonPoint = extern struct {
+    point: win32.POINT,
+    pub fn xy(x: i32, y: i32) PolygonPoint {
+        return .{ .point = .{ .x = x, .y = y } };
+    }
+};
+
 pub fn Draw(window_config: zin.WindowConfig) type {
     return struct {
         hwnd: win32.HWND,
@@ -833,6 +844,17 @@ pub fn Draw(window_config: zin.WindowConfig) type {
                 @ptrCast(t.ptr),
                 @intCast(t.len),
             )) win32.panicWin32("TextOut", win32.GetLastError());
+        }
+
+        pub fn polygon(self: *const Self, points: []const PolygonPoint, color: zin.Rgb8) void {
+            const brush = win32.createSolidBrush(colorrefFromRgb8(color));
+            defer win32.deleteObject(brush);
+            const old_brush = win32.SelectObject(self.hdc, brush);
+            defer _ = win32.SelectObject(self.hdc, old_brush);
+            if (0 == win32.Polygon(self.hdc, @ptrCast(points.ptr), @intCast(points.len))) win32.panicWin32(
+                "Polygon",
+                win32.GetLastError(),
+            );
         }
     };
 }

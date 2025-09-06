@@ -474,6 +474,8 @@ pub const Rect = struct {
     }
 };
 
+pub const PolygonPoint = platform.PolygonPoint;
+
 /// Helper for managing mouse targets and button states
 pub fn MouseState(comptime MouseTarget: type, comptime opt: struct {
     left: bool,

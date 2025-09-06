@@ -102,6 +102,19 @@ fn callback(cb: zin.Callback(.{ .static = .main })) void {
                 .y = @intFromFloat(@round(@as(f32, @floatFromInt(size.y)) * global.text_position)),
             };
             const dpi_scale = d.getDpiScale();
+
+            // currenly only supported on windows
+            if (zin.platform_kind == .win32) {
+                var pentagon = [5]zin.PolygonPoint{
+                    .xy(zin.scale(i32, 200, dpi_scale.x), zin.scale(i32, 127, dpi_scale.y)), // top
+                    .xy(zin.scale(i32, 232, dpi_scale.x), zin.scale(i32, 150, dpi_scale.y)), // top right
+                    .xy(zin.scale(i32, 220, dpi_scale.x), zin.scale(i32, 187, dpi_scale.y)), // bottom right
+                    .xy(zin.scale(i32, 180, dpi_scale.x), zin.scale(i32, 187, dpi_scale.y)), // bottom left
+                    .xy(zin.scale(i32, 168, dpi_scale.x), zin.scale(i32, 150, dpi_scale.y)), // top left
+                };
+                d.polygon(&pentagon, .blue);
+            }
+
             const rect_size = zin.scale(i32, 10, dpi_scale.x);
             d.rect(.ltwh(animate.x, size.y - animate.y, rect_size, rect_size), .red);
             const margin_left = zin.scale(i32, 10, dpi_scale.x);
