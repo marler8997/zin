@@ -510,7 +510,7 @@ pub fn MouseState(comptime MouseTarget: type, comptime opt: struct {
         pub fn updateTarget(state: *Self, maybe_target: ?MouseTarget) bool {
             if (maybe_target) |target| {
                 if (state.maybe_interaction) |*interaction| {
-                    if (interaction.target == target) return false; // no update
+                    if (std.meta.eql(interaction.target, target)) return false; // no update
                 }
                 state.maybe_interaction = .{ .target = target };
                 return true; // updated
