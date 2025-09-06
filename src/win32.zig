@@ -622,7 +622,8 @@ fn makeWndProc(
                             .{ .key = keyFromWin32(.down, wparam, lparam) },
                         ),
                     };
-                    return 0;
+                    if (msg == win32.WM_KEYDOWN) return 0;
+                    return win32.DefWindowProcW(hwnd, msg, wparam, lparam);
                 },
                 win32.WM_KEYUP, win32.WM_SYSKEYUP => {
                     if (comptime config.data().key_events) switch (config) {
@@ -632,7 +633,8 @@ fn makeWndProc(
                             .{ .key = keyFromWin32(.up, wparam, lparam) },
                         ),
                     };
-                    return 0;
+                    if (msg == win32.WM_KEYUP) return 0;
+                    return win32.DefWindowProcW(hwnd, msg, wparam, lparam);
                 },
                 win32.WM_MOUSEMOVE => {
                     if (comptime config.data().mouse_events) {
