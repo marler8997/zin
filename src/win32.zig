@@ -51,6 +51,7 @@ pub const WindowConfig = struct {
         },
     } = .{ .gdi = .{} },
     set_cursor_callback: bool = false,
+    default_window_proc: ?fn (hwnd: win32.HWND, msg: u32, wparam: usize, lparam: isize) isize = null,
 };
 
 pub const WindowClass = struct {
@@ -746,7 +747,10 @@ fn makeWndProc(
                     }
                     return 0;
                 },
-                else => return win32.DefWindowProcW(hwnd, msg, wparam, lparam),
+                else => return if (config.data().win32.default_window_proc) |proc|
+                    proc(hwnd, msg, wparam, lparam)
+                else
+                    win32.DefWindowProcW(hwnd, msg, wparam, lparam),
             }
         }
     }).wndProc;
