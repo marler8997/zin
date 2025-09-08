@@ -693,6 +693,48 @@ fn makeWndProc(
                     }
                     return 0;
                 },
+                win32.WM_RBUTTONDOWN => {
+                    if (comptime config.data().mouse_events) {
+                        const pos = win32.pointFromLparam(lparam);
+                        switch (config) {
+                            .static => class.callback(
+                                .{ .mouse = .{
+                                    .position = .{ .x = pos.x, .y = pos.y },
+                                    .button = .{ .id = .right, .state = .down },
+                                } },
+                            ),
+                            .dynamic => class.callback(
+                                windowFromHwnd(hwnd),
+                                .{ .mouse = .{
+                                    .position = .{ .x = pos.x, .y = pos.y },
+                                    .button = .{ .id = .right, .state = .down },
+                                } },
+                            ),
+                        }
+                    }
+                    return 0;
+                },
+                win32.WM_RBUTTONUP => {
+                    if (comptime config.data().mouse_events) {
+                        const pos = win32.pointFromLparam(lparam);
+                        switch (config) {
+                            .static => class.callback(
+                                .{ .mouse = .{
+                                    .position = .{ .x = pos.x, .y = pos.y },
+                                    .button = .{ .id = .right, .state = .up },
+                                } },
+                            ),
+                            .dynamic => class.callback(
+                                windowFromHwnd(hwnd),
+                                .{ .mouse = .{
+                                    .position = .{ .x = pos.x, .y = pos.y },
+                                    .button = .{ .id = .right, .state = .up },
+                                } },
+                            ),
+                        }
+                    }
+                    return 0;
+                },
                 else => return win32.DefWindowProcW(hwnd, msg, wparam, lparam),
             }
         }
