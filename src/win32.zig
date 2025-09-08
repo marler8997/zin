@@ -50,6 +50,7 @@ pub const WindowConfig = struct {
             use_backbuffer: bool = true,
         },
     } = .{ .gdi = .{} },
+    set_cursor_callback: bool = false,
 };
 
 pub const WindowClass = struct {
@@ -573,6 +574,16 @@ fn makeWndProc(
                         .dynamic => class.callback(windowFromHwnd(hwnd), .close),
                     }
                     return 0;
+                },
+                win32.WM_SETCURSOR => {
+                    if (config.data().win32.set_cursor_callback) {
+                        var result: isize = 0;
+                        class.callback(.{
+                            .win32_set_cursor = .{ .result_ref = &result, .wparam = wparam, .lparam = lparam },
+                        });
+                        if (result != 0) return result;
+                    }
+                    return win32.DefWindowProcW(hwnd, msg, wparam, lparam);
                 },
                 win32.WM_PAINT => {
                     paint(config, class, hwnd);

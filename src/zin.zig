@@ -353,7 +353,9 @@ pub fn Callback(window_config: WindowConfig) type {
             .none => [_]Field{},
             .one => [_]Field{.{ .name = "timer", .type = void }},
             .type => |t| [_]Field{.{ .name = "timer", .type = t }},
-        })),
+        }) ++ (if (window_config.data().win32.set_cursor_callback) [_]Field{
+            .{ .name = "win32_set_cursor", .type = struct { result_ref: *isize, wparam: usize, lparam: isize } },
+        } else [_]Field{})),
     );
 }
 
