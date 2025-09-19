@@ -264,6 +264,24 @@ fn closeNotificationHandler() void {
     // Perform cleanup or other actions after the window closes
 }
 
+pub const NSEventModifierFlags = packed struct(c_ulong) {
+    // Lower bits (0-15) are reserved/unused in our context
+    _reserved_low: u16 = 0,
+
+    // Modifier key flags (bits 16-23)
+    caps_lock: bool = false, // bit 16: NSEventModifierFlagCapsLock
+    shift: bool = false, // bit 17: NSEventModifierFlagShift
+    control: bool = false, // bit 18: NSEventModifierFlagControl
+    option: bool = false, // bit 19: NSEventModifierFlagOption (Alt)
+    command: bool = false, // bit 20: NSEventModifierFlagCommand
+    numeric_pad: bool = false, // bit 21: NSEventModifierFlagNumericPad
+    help: bool = false, // bit 22: NSEventModifierFlagHelp
+    function: bool = false, // bit 23: NSEventModifierFlagFunction
+
+    // Upper bits (24-63) contain device-independent flags and other data
+    _reserved_high: u40 = 0,
+};
+
 pub const VirtualKey = enum(u16) {
     // Letter keys (ANSI layout)
     a = 0x00,
@@ -859,8 +877,9 @@ fn ZinView(
 
             const key_code = event.msgSend(u16, "keyCode", .{});
             const is_repeat = event.msgSend(bool, "isARepeat", .{});
+            const modifier_flags: NSEventModifierFlags = @bitCast(event.msgSend(c_ulong, "modifierFlags", .{}));
 
-            log.debug("keyDown: keyCode={}, repeat={}", .{ key_code, is_repeat });
+            log.debug("keyDown: keyCode={}, repeat={}, modifiers=0x{x}", .{ key_code, is_repeat, @as(c_ulong, @bitCast(modifier_flags)) });
 
             const key_event: zin.Key = .{
                 .kind = if (is_repeat) .down_repeat else .down,
@@ -868,6 +887,10 @@ fn ZinView(
                 .scan_code = {},
                 .win32_extended = {},
                 .x11_mask = {},
+                .macos_mods = switch (zin.platform_kind) {
+                    .macos => modifier_flags,
+                    else => {},
+                },
             };
 
             switch (config) {
@@ -881,6 +904,7 @@ fn ZinView(
             const event = objc.Object{ .value = event_id };
 
             const key_code = event.msgSend(u16, "keyCode", .{});
+            const modifier_flags: NSEventModifierFlags = @bitCast(event.msgSend(c_ulong, "modifierFlags", .{}));
 
             const key_event: zin.Key = .{
                 .kind = .up,
@@ -888,6 +912,10 @@ fn ZinView(
                 .scan_code = {},
                 .win32_extended = {},
                 .x11_mask = {},
+                .macos_mods = switch (zin.platform_kind) {
+                    .macos => modifier_flags,
+                    else => {},
+                },
             };
 
             switch (config) {
@@ -901,7 +929,7 @@ fn ZinView(
             const event = objc.Object{ .value = event_id };
 
             const key_code = event.msgSend(u16, "keyCode", .{});
-            const modifier_flags = event.msgSend(c_ulong, "modifierFlags", .{});
+            const modifier_flags: NSEventModifierFlags = @bitCast(event.msgSend(c_ulong, "modifierFlags", .{}));
 
             // Determine the VirtualKey based on the key code
             const vk: VirtualKey = @enumFromInt(key_code);
@@ -912,12 +940,12 @@ fn ZinView(
             var is_down = false;
 
             switch (vk) {
-                .shift_left, .shift_right => is_down = (modifier_flags & (1 << 17)) != 0, // NSEventModifierFlagShift
-                .control_left, .control_right => is_down = (modifier_flags & (1 << 18)) != 0, // NSEventModifierFlagControl
-                .alt_left, .alt_right => is_down = (modifier_flags & (1 << 19)) != 0, // NSEventModifierFlagOption
-                .super_left, .super_right => is_down = (modifier_flags & (1 << 20)) != 0, // NSEventModifierFlagCommand
-                .caps_lock => is_down = (modifier_flags & (1 << 16)) != 0, // NSEventModifierFlagCapsLock
-                .function => is_down = (modifier_flags & (1 << 23)) != 0, // NSEventModifierFlagFunction
+                .shift_left, .shift_right => is_down = modifier_flags.shift,
+                .control_left, .control_right => is_down = modifier_flags.control,
+                .alt_left, .alt_right => is_down = modifier_flags.option,
+                .super_left, .super_right => is_down = modifier_flags.command,
+                .caps_lock => is_down = modifier_flags.caps_lock,
+                .function => is_down = modifier_flags.function,
                 else => return, // Not a modifier we track
             }
 
@@ -927,6 +955,10 @@ fn ZinView(
                 .scan_code = {},
                 .win32_extended = {},
                 .x11_mask = {},
+                .macos_mods = switch (zin.platform_kind) {
+                    .macos => modifier_flags,
+                    else => {},
+                },
             };
 
             switch (config) {

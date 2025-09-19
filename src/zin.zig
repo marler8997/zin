@@ -133,6 +133,10 @@ pub const X11KeyMask = switch (platform_kind) {
     .x11 => platform.x11.KeyButtonMask,
     else => void,
 };
+pub const MacOSKeyMods = switch (platform_kind) {
+    .macos => platform.NSEventModifierFlags,
+    else => void,
+};
 
 pub const UnicodeKeyboardState = struct {
     array: switch (platform_kind) {
@@ -176,6 +180,7 @@ pub const Key = struct {
     scan_code: ScanCode,
     win32_extended: Win32ExtendedKey,
     x11_mask: X11KeyMask,
+    macos_mods: MacOSKeyMods,
 
     pub fn utf8(
         key: *const Key,
