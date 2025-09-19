@@ -241,8 +241,156 @@ fn closeNotificationHandler() void {
     // Perform cleanup or other actions after the window closes
 }
 
-pub const VirtualKey = enum(usize) {
-    n = 0,
+pub const VirtualKey = enum(u16) {
+    // Letter keys (ANSI layout)
+    a = 0x00,
+    s = 0x01,
+    d = 0x02,
+    f = 0x03,
+    h = 0x04,
+    g = 0x05,
+    z = 0x06,
+    x = 0x07,
+    c = 0x08,
+    v = 0x09,
+    iso_section = 0x0A, // ISO keyboard only
+    b = 0x0B,
+    q = 0x0C,
+    w = 0x0D,
+    e = 0x0E,
+    r = 0x0F,
+    y = 0x10,
+    t = 0x11,
+
+    // Number keys
+    @"1" = 0x12,
+    @"2" = 0x13,
+    @"3" = 0x14,
+    @"4" = 0x15,
+    @"6" = 0x16,
+    @"5" = 0x17,
+    @"9" = 0x19,
+    @"7" = 0x1A,
+    @"8" = 0x1C,
+    @"0" = 0x1D,
+
+    // Symbol keys
+    equal = 0x18,
+    minus = 0x1B,
+    right_bracket = 0x1E,
+    o = 0x1F,
+    u = 0x20,
+    left_bracket = 0x21,
+    i = 0x22,
+    p = 0x23,
+    @"return" = 0x24,
+    l = 0x25,
+    j = 0x26,
+    quote = 0x27,
+    k = 0x28,
+    semicolon = 0x29,
+    backslash = 0x2A,
+    comma = 0x2B,
+    slash = 0x2C,
+    n = 0x2D,
+    m = 0x2E,
+    period = 0x2F,
+
+    // Navigation and control keys
+    tab = 0x30,
+    space = 0x31,
+    grave = 0x32,
+    backspace = 0x33, // This is the Delete key on macOS (but acts as backspace)
+    escape = 0x35,
+    super_right = 0x36, // Right command key
+    super_left = 0x37, // Left command key
+    shift_left = 0x38,
+    caps_lock = 0x39,
+    alt_left = 0x3A, // Left option key
+    control_left = 0x3B,
+    shift_right = 0x3C,
+    alt_right = 0x3D, // Right option key
+    control_right = 0x3E,
+    function = 0x3F,
+
+    // Function keys
+    f17 = 0x40,
+    decimal = 0x41, // Keypad decimal
+    multiply = 0x43, // Keypad multiply
+    add = 0x45, // Keypad plus
+    keypad_clear = 0x47,
+    volume_up = 0x48,
+    volume_down = 0x49,
+    mute = 0x4A,
+    divide = 0x4B, // Keypad divide
+    keypad_enter = 0x4C,
+    subtract = 0x4E, // Keypad minus
+    f18 = 0x4F,
+    f19 = 0x50,
+    separator = 0x51, // Keypad equals (used as separator)
+
+    // Numpad keys
+    numpad0 = 0x52,
+    numpad1 = 0x53,
+    numpad2 = 0x54,
+    numpad3 = 0x55,
+    numpad4 = 0x56,
+    numpad5 = 0x57,
+    numpad6 = 0x58,
+    numpad7 = 0x59,
+    f20 = 0x5A,
+    numpad8 = 0x5B,
+    numpad9 = 0x5C,
+
+    // JIS keyboard specific
+    jis_yen = 0x5D,
+    jis_underscore = 0x5E,
+    jis_keypad_comma = 0x5F,
+
+    // More function keys
+    f5 = 0x60,
+    f6 = 0x61,
+    f7 = 0x62,
+    f3 = 0x63,
+    f8 = 0x64,
+    f9 = 0x65,
+    jis_eisu = 0x66,
+    f11 = 0x67,
+    jis_kana = 0x68,
+    f13 = 0x69,
+    f16 = 0x6A,
+    f14 = 0x6B,
+    f10 = 0x6D,
+    contextual_menu = 0x6E,
+    f12 = 0x6F,
+    f15 = 0x71,
+    insert = 0x72, // Help key (used as Insert)
+    home = 0x73,
+    page_up = 0x74,
+    delete = 0x75, // Forward delete key
+    f4 = 0x76,
+    end = 0x77,
+    f2 = 0x78,
+    page_down = 0x79,
+    f1 = 0x7A,
+
+    // Arrow keys
+    left = 0x7B,
+    right = 0x7C,
+    down = 0x7D,
+    up = 0x7E,
+
+    // Keys that don't have standard macOS mappings
+    // Using unused/reserved codes or approximations
+    pause = 0x90, // No direct equivalent on Mac
+    print_screen = 0x91, // No direct equivalent on Mac
+    numlock = 0x92, // No direct equivalent on Mac
+    scroll_lock = 0x93, // No direct equivalent on Mac
+    f21 = 0x80, // Extended function keys (non-standard)
+    f22 = 0x81,
+    f23 = 0x82,
+    f24 = 0x83,
+
     _,
 };
 pub const ScanCode = void;
