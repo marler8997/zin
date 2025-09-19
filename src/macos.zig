@@ -42,8 +42,20 @@ fn modalAlert(
 
     {
         const shared_app = NSApplication.sharedApplication();
-        _ = shared_app.activateIgnoringOtherApps(true);
-        alert.window().makeKeyAndOrderFront();
+        // First, activate the application and bring it to front
+        shared_app.activateIgnoringOtherApps(true);
+
+        // Set the alert window level to be above normal windows
+        const alert_window = alert.window();
+        alert_window.obj.msgSend(void, "setLevel:", .{
+            @as(i64, 8), // NSModalPanelWindowLevel = 8 (highest for modal dialogs)
+        });
+
+        // Make the window key and order it to the front
+        alert_window.makeKeyAndOrderFront();
+
+        // Center the window on screen
+        alert_window.obj.msgSend(void, "center", .{});
     }
 
     alert.runModal();
