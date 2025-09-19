@@ -243,7 +243,12 @@ fn createWindow(
         window.setTitle(title);
     }
     window.obj.msgSend(void, "setContentView:", .{view.obj});
+
+    window.obj.msgSend(void, "makeFirstResponder:", .{view.obj});
+    window.obj.msgSend(void, "setAcceptsMouseMovedEvents:", .{true});
     window.makeKeyAndOrderFront();
+    window.obj.msgSend(void, "makeKeyWindow", .{});
+    window.obj.msgSend(void, "makeMainWindow", .{});
 
     return window;
 }
@@ -491,6 +496,7 @@ pub fn quitMainLoop() void {
 
 pub fn mainLoop() !void {
     const shared_app = NSApplication.sharedApplication();
+    shared_app.obj.msgSend(void, "setActivationPolicy:", .{@as(i64, 0)}); // NSApplicationActivationPolicyRegular = 0
     _ = shared_app.activateIgnoringOtherApps(true);
     _ = shared_app.run();
 }
@@ -568,6 +574,12 @@ fn ZinView(
                 if (!try class.addMethod("resetCursorRects", resetCursorRects)) @panic("addMethod resetCursorRects failed");
             }
 
+            if (config.data().key_events) {
+                if (!try class.addMethod("keyDown:", keyDown)) @panic("addMethod keyDown failed");
+                if (!try class.addMethod("keyUp:", keyUp)) @panic("addMethod keyUp failed");
+                if (!try class.addMethod("flagsChanged:", flagsChanged)) @panic("addMethod flagsChanged failed");
+            }
+
             switch (config.data().timers) {
                 .none => {},
                 .one, .type => {
@@ -614,6 +626,8 @@ fn ZinView(
             });
             // Register for window should close notification by becoming the window delegate
             w.obj.msgSend(void, "setDelegate:", .{self.obj});
+
+            _ = w.obj.msgSend(void, "makeFirstResponder:", .{self.obj});
 
             if (config.data().mouse_events) {
                 // Enable mouse move tracking even when mouse button is not pressed
@@ -703,23 +717,15 @@ fn ZinView(
 
         fn becomeFirstResponder(object_id: objc.c.id, sel: objc.c.SEL) callconv(.C) bool {
             _ = sel;
-            const self: Self = .{ .obj = .{ .value = object_id } };
-            _ = self;
-
-            // Setup code when becoming first responder
-            // e.g., show a focus ring
-
+            _ = object_id;
+            log.debug("View became first responder", .{});
             return true; // Return true to accept becoming first responder
         }
 
         fn resignFirstResponder(object_id: objc.c.id, sel: objc.c.SEL) callconv(.C) bool {
             _ = sel;
-            const self: Self = .{ .obj = .{ .value = object_id } };
-            _ = self;
-
-            // Cleanup code when resigning first responder
-            // e.g., hide a focus ring
-
+            _ = object_id;
+            log.debug("View resigned first responder", .{});
             return true; // Return true to accept resigning
         }
 
@@ -844,6 +850,88 @@ fn ZinView(
             const buttonNumber = event.msgSend(c_int, "buttonNumber", .{});
             if (buttonNumber == 2) {
                 self.mouseEvent(event, .{ .id = .middle, .state = .up });
+            }
+        }
+
+        fn keyDown(object_id: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.C) void {
+            _ = object_id;
+            const event = objc.Object{ .value = event_id };
+
+            const key_code = event.msgSend(u16, "keyCode", .{});
+            const is_repeat = event.msgSend(bool, "isARepeat", .{});
+
+            log.debug("keyDown: keyCode={}, repeat={}", .{ key_code, is_repeat });
+
+            const key_event: zin.Key = .{
+                .kind = if (is_repeat) .down_repeat else .down,
+                .vk = @enumFromInt(key_code),
+                .scan_code = {},
+                .win32_extended = {},
+                .x11_mask = {},
+            };
+
+            switch (config) {
+                .static => classdef.callback(.{ .key = key_event }),
+                .dynamic => @panic("todo"),
+            }
+        }
+
+        fn keyUp(object_id: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.C) void {
+            _ = object_id;
+            const event = objc.Object{ .value = event_id };
+
+            const key_code = event.msgSend(u16, "keyCode", .{});
+
+            const key_event: zin.Key = .{
+                .kind = .up,
+                .vk = @enumFromInt(key_code),
+                .scan_code = {},
+                .win32_extended = {},
+                .x11_mask = {},
+            };
+
+            switch (config) {
+                .static => classdef.callback(.{ .key = key_event }),
+                .dynamic => @panic("todo"),
+            }
+        }
+
+        fn flagsChanged(object_id: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.C) void {
+            _ = object_id;
+            const event = objc.Object{ .value = event_id };
+
+            const key_code = event.msgSend(u16, "keyCode", .{});
+            const modifier_flags = event.msgSend(c_ulong, "modifierFlags", .{});
+
+            // Determine the VirtualKey based on the key code
+            const vk: VirtualKey = @enumFromInt(key_code);
+
+            // Determine if this is a key down or up based on modifier flags
+            // This is complex because flagsChanged doesn't directly tell us up/down
+            // We need to check the specific flag for each modifier key
+            var is_down = false;
+
+            switch (vk) {
+                .shift_left, .shift_right => is_down = (modifier_flags & (1 << 17)) != 0, // NSEventModifierFlagShift
+                .control_left, .control_right => is_down = (modifier_flags & (1 << 18)) != 0, // NSEventModifierFlagControl
+                .alt_left, .alt_right => is_down = (modifier_flags & (1 << 19)) != 0, // NSEventModifierFlagOption
+                .super_left, .super_right => is_down = (modifier_flags & (1 << 20)) != 0, // NSEventModifierFlagCommand
+                .caps_lock => is_down = (modifier_flags & (1 << 16)) != 0, // NSEventModifierFlagCapsLock
+                .function => is_down = (modifier_flags & (1 << 23)) != 0, // NSEventModifierFlagFunction
+                else => return, // Not a modifier we track
+            }
+
+            const key_event: zin.Key = .{
+                .kind = if (is_down) .down else .up,
+                .vk = vk,
+                .scan_code = {},
+                .win32_extended = {},
+                .x11_mask = {},
+            };
+
+            switch (config) {
+                .static => classdef.callback(.{ .key = key_event }),
+                .dynamic => @panic("todo"),
             }
         }
     };
