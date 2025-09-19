@@ -189,27 +189,45 @@ fn createWindow(
     const window = NSWindow.alloc();
     errdefer window.release();
 
-    const frame: NSRect = .{
-        // TODO: support this as an option
-        .origin = .{ .x = 0, .y = 0 },
-        .size = switch (opt.size) {
-            // TODO: how is default actually supposed work?
-            .default => .{ .width = 100, .height = 100 },
-            .client_pixels => |s| .{ .width = @floatFromInt(s.x), .height = @floatFromInt(s.y) },
-            .client_points => |s| .{ .width = @floatFromInt(s.x), .height = @floatFromInt(s.y) },
-            .window_pixels => @panic("todo"),
-            .window_points => @panic("todo"),
-        },
-    };
     const style_mask: NSWindow.StyleMask = .{
         .titled = 1,
         .closable = 1,
         .miniaturizable = 1,
         .resizable = 1,
     };
+
+    const origin = NSPoint{ .x = 0, .y = 0 };
+    const content_rect: NSRect = blk: switch (opt.size) {
+        // TODO: how is default actually supposed work?
+        .default => break :blk .{
+            .origin = origin,
+            .size = NSSize{ .width = 100, .height = 100 },
+        },
+        // TODO: treat pixels/points differently
+        .client_pixels, .client_points => |s| break :blk .{
+            .origin = origin,
+            .size = NSSize{
+                .width = @floatFromInt(s.x),
+                .height = @floatFromInt(s.y),
+            },
+        },
+        .window_pixels, .window_points => |s| {
+            // TODO: treat pixels/points differently
+            const window_rect = NSRect{
+                .origin = origin,
+                .size = .{ .width = @floatFromInt(s.x), .height = @floatFromInt(s.y) },
+            };
+            break :blk getClass("NSWindow").msgSend(
+                NSRect,
+                "contentRectForFrameRect:styleMask:",
+                .{ window_rect, style_mask },
+            );
+        },
+    };
+
     {
         const result = window.obj.msgSend(objc.Object, "initWithContentRect:styleMask:backing:defer:", .{
-            frame,
+            content_rect,
             style_mask,
             @as(u32, 2), // NSBackingStoreBuffered
             false,
