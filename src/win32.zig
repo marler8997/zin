@@ -526,6 +526,7 @@ fn keyFromWin32(direction: enum { up, down }, wparam: win32.WPARAM, lparam: win3
         .scan_code = @enumFromInt(key_flags.scan_code),
         .win32_extended = key_flags.extended,
         .x11_mask = {},
+        .macos_mods = {},
     };
 }
 
