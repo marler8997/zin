@@ -1,8 +1,10 @@
+const builtin = @import("builtin");
 const std = @import("std");
 const zin = @import("zin.zig");
 pub const win32 = @import("win32").everything;
-const WINAPI = std.os.windows.WINAPI;
 const windowmsg = @import("windowmsg.zig");
+
+const zig_atleast_15 = builtin.zig_version.order(.{ .major = 0, .minor = 15, .patch = 0 }) != .lt;
 
 threadlocal var thread_is_panicing = false;
 pub fn panic(panic_opt: zin.PanicOptions) type {
@@ -14,11 +16,13 @@ pub fn panic(panic_opt: zin.PanicOptions) type {
             if (!thread_is_panicing) {
                 thread_is_panicing = true;
                 var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-                const msg_z: [:0]const u8 = if (std.fmt.allocPrintZ(
+                const oom_msg = "allocate error message failed";
+                const msg_z: [:0]const u8 = if (zig_atleast_15) std.fmt.allocPrintSentinel(
                     arena.allocator(),
                     "{s}",
                     .{msg},
-                )) |msg_z| msg_z else |_| "failed allocate error message";
+                    0,
+                ) catch oom_msg else std.fmt.allocPrintZ(arena.allocator(), "{s}", .{msg}) catch oom_msg;
                 _ = @import("win32").everything.MessageBoxA(null, msg_z, panic_opt.title, panic_opt.win32_style);
             }
             std.debug.defaultPanic(msg, ret_addr);
@@ -539,7 +543,7 @@ fn getTime() u32 {
     return win32.GetTickCount() - t;
 }
 
-const WndProc = fn (win32.HWND, u32, win32.WPARAM, win32.LPARAM) callconv(WINAPI) win32.LRESULT;
+const WndProc = fn (win32.HWND, u32, win32.WPARAM, win32.LPARAM) callconv(.winapi) win32.LRESULT;
 fn makeWndProc(
     config: zin.WindowConfig,
     class: zin.WindowClassDefinition(config),
@@ -550,7 +554,7 @@ fn makeWndProc(
             msg: u32,
             wparam: win32.WPARAM,
             lparam: win32.LPARAM,
-        ) callconv(WINAPI) win32.LRESULT {
+        ) callconv(.winapi) win32.LRESULT {
             // var msg_tail: ?*windowmsg.MessageNode = null;
             // var msg_node: windowmsg.MessageNode = undefined;
             // msg_node.init(&msg_tail, hwnd, msg, wparam, lparam);

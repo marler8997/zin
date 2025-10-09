@@ -4,6 +4,7 @@ const build_options = @import("build_options");
 
 const root = @import("root");
 
+const BoundedArray = @import("bounded_array.zig").BoundedArray;
 pub const Rgb8 = @import("Rgb8.zig");
 
 const win32 = @import("win32.zig");
@@ -185,7 +186,7 @@ pub const Key = struct {
     pub fn utf8(
         key: *const Key,
         keyboard_state: UnicodeKeyboardStateRef,
-    ) std.BoundedArray(u8, max_utf8_per_key) {
+    ) BoundedArray(u8, max_utf8_per_key) {
         switch (platform_kind) {
             .win32 => {
                 var char_buf: [max_wtf16_per_key + 1]u16 = undefined;
@@ -209,7 +210,7 @@ pub const Key = struct {
                     }
                     std.debug.panic("ToUnicode returned {} characters", .{unicode_result});
                 }
-                var result: std.BoundedArray(u8, max_utf8_per_key) = .{ .len = 0, .buffer = undefined };
+                var result: BoundedArray(u8, max_utf8_per_key) = .{ .len = 0, .buffer = undefined };
                 const len = std.unicode.utf16LeToUtf8(&result.buffer, char_buf[0..@intCast(unicode_result)]) catch @panic("ToUnicode generated invalid utf16le");
                 std.debug.assert(len <= max_utf8_per_key);
                 result.len = len;
@@ -217,7 +218,7 @@ pub const Key = struct {
             },
             .x11 => {
                 if (x11.asciiFromKeysym(key.vk)) |ascii| {
-                    var result: std.BoundedArray(u8, max_utf8_per_key) = .{ .len = 1, .buffer = undefined };
+                    var result: BoundedArray(u8, max_utf8_per_key) = .{ .len = 1, .buffer = undefined };
                     result.buffer[0] = ascii;
                     return result;
                 }
@@ -226,7 +227,7 @@ pub const Key = struct {
             .macos => {
                 // For macOS, we'll provide a simple ASCII mapping for now
                 // A more complete implementation would use the NSEvent's characters method
-                var result: std.BoundedArray(u8, max_utf8_per_key) = .{ .len = 0, .buffer = undefined };
+                var result: BoundedArray(u8, max_utf8_per_key) = .{ .len = 0, .buffer = undefined };
 
                 // Only process key down events
                 if (key.kind == .up) return result;

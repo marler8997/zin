@@ -198,7 +198,7 @@ fn getIcons(dpi_x: u32, dpi_y: u32) Icons {
             win32.LR_SHARED,
         );
         if (small == null)
-            std.debug.panic("LoadImage for small icon failed, error={}", .{win32.GetLastError()});
+            std.debug.panic("LoadImage for small icon failed, error={f}", .{win32.GetLastError()});
         const large = win32.LoadImageW(
             win32.GetModuleHandleW(null),
             @ptrFromInt(1), // resource id
@@ -208,7 +208,7 @@ fn getIcons(dpi_x: u32, dpi_y: u32) Icons {
             win32.LR_SHARED,
         );
         if (large == null)
-            std.debug.panic("LoadImage for large icon failed, error={}", .{win32.GetLastError()});
+            std.debug.panic("LoadImage for large icon failed, error={f}", .{win32.GetLastError()});
         return .{
             .small = .init(@ptrCast(small)),
             .large = .init(@ptrCast(large)),
