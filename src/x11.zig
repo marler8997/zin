@@ -1401,6 +1401,7 @@ fn keyFromX11(direction: enum { up, down }, keycode: u8, mask: x11.KeyButtonMask
         .scan_code = keycode,
         .win32_extended = {},
         .x11_mask = mask,
+        .macos_mods = {},
     };
 }
 

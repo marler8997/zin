@@ -125,8 +125,8 @@ pub const VirtualKey = platform.VirtualKey;
 pub const ScanCode = platform.ScanCode;
 
 pub const KeyState = enum { up, down };
-pub const Win32ExtendedKey = switch (builtin.os.tag) {
-    .windows => bool,
+pub const Win32ExtendedKey = switch (platform_kind) {
+    .win32 => bool,
     else => void,
 };
 pub const X11KeyMask = switch (platform_kind) {
