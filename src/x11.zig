@@ -10,6 +10,8 @@ pub const win32 = switch (builtin.os.tag) {
 
 const log = std.log.scoped(.x11);
 
+pub const zig_atleast_15 = @import("builtin").zig_version.order(.{ .major = 0, .minor = 15, .patch = 0 }) != .lt;
+
 threadlocal var thread_is_panicing = false;
 pub fn panic(panic_opt: zin.PanicOptions) type {
     return std.debug.FullPanic(struct {
@@ -54,7 +56,26 @@ pub fn readFull(sock: std.posix.socket_t, buf: []u8) ReadFullError!void {
     std.debug.assert(buf.len > 0);
     var total_received: usize = 0;
     while (total_received < buf.len) {
-        const last_received = (std.net.Stream{ .handle = sock }).read(buf[total_received..]) catch |err| switch (err) {
+        const last_received = (std.net.Stream{ .handle = sock }).read(buf[total_received..]) catch |err| if (zig_atleast_15) switch (err) {
+            error.WouldBlock => unreachable, // socket should be blocking
+            error.ConnectionTimedOut => unreachable, // we're already connected
+            error.ConnectionResetByPeer => return error.ConnectionResetByPeer,
+            error.InputOutput => return error.InputOutput,
+            error.BrokenPipe => return error.BrokenPipe,
+            error.SystemResources => return error.SystemResources,
+            error.SocketNotConnected => return error.SocketNotConnected,
+            error.NetworkSubsystemFailed => return error.NetworkSubsystemFailed,
+            error.Unexpected => return error.Unexpected,
+            error.IsDir => unreachable,
+            error.NotOpenForReading => unreachable,
+            error.Canceled => unreachable,
+            error.AccessDenied => unreachable,
+            error.ProcessNotFound => unreachable,
+            error.LockViolation => unreachable, // windows only
+            error.OperationAborted => unreachable, // seems to be windows only
+            error.MessageTooBig => unreachable, // probably UDP only
+            error.SocketNotBound => unreachable,
+        } else switch (err) {
             error.WouldBlock => unreachable, // socket should be blocking
             error.ConnectionTimedOut => unreachable, // we're already connected
             error.ConnectionResetByPeer => return error.ConnectionResetByPeer,
@@ -85,7 +106,21 @@ const SendError = error{
 fn sendNoSequencing(sock: std.posix.socket_t, data: []const u8) SendError!void {
     var total_sent: usize = 0;
     while (total_sent < data.len) {
-        const last_sent = x11.writeSock(sock, data[total_sent..], 0) catch |err| switch (err) {
+        const last_sent = x11.writeSock(sock, data[total_sent..], 0) catch |err| if (zig_atleast_15) switch (err) {
+            error.AccessDenied => unreachable,
+            error.WouldBlock => unreachable,
+            error.Unexpected => unreachable,
+            error.FileDescriptorNotASocket => unreachable,
+            error.FastOpenAlreadyInProgress => unreachable,
+            error.MessageTooBig => unreachable, // probably UDP specific
+            error.NetworkUnreachable => unreachable, // probably UDP specific
+            error.ConnectionRefused => unreachable, // should be impossible as we're already connected
+            error.BrokenPipe,
+            error.ConnectionResetByPeer,
+            error.SystemResources,
+            error.NetworkSubsystemFailed,
+            => |e| return e,
+        } else switch (err) {
             error.AccessDenied => unreachable,
             error.WouldBlock => unreachable,
             error.Unexpected => unreachable,
@@ -148,20 +183,20 @@ fn Extension(comptime name: []const u8) type {
 
             const reply: *x11.ServerMsg.QueryExtension = @ptrCast(reply_base);
             if (reply.present == 0) {
-                log.info("extension '{}': not present", .{x11.dbe.name});
+                log.info("extension '{f}': not present", .{x11.dbe.name});
                 global.connection.dbe = .unsupported;
                 return .newly_unsupported;
             }
             if (reply.present != 1) {
                 global.connection.dbe = .unsupported;
                 log.err(
-                    "unexpected extension '{}' reply present value {}",
+                    "unexpected extension '{f}' reply present value {}",
                     .{ x11.dbe.name, reply.present },
                 );
                 return error.MalformedX11Reply;
             }
             log.info(
-                "extension '{}': opcode={} base_error_code={}",
+                "extension '{f}': opcode={} base_error_code={}",
                 .{ x11.dbe.name, reply.major_opcode, reply.first_error },
             );
             global.connection.dbe = .{ .supported = .{
@@ -256,7 +291,10 @@ pub fn connect(allocator: std.mem.Allocator, options: zin.ConnectOptions) zin.Co
     }
 
     const display = x11.getDisplay();
-    const parsed_display = x11.parseDisplay(display) catch return error.BadX11Display;
+    const parsed_display = x11.parseDisplay(display) catch {
+        log.err("bad DISPLAY '{s}'", .{display});
+        return error.BadX11Display;
+    };
 
     const sock = try x11.connect(display, parsed_display);
     errdefer x11.disconnect(sock);
@@ -295,7 +333,7 @@ pub fn connect(allocator: std.mem.Allocator, options: zin.ConnectOptions) zin.Co
     };
 
     const connect_setup = x11.ConnectSetup{
-        .buf = try allocator.allocWithOptions(u8, setup_reply_len, 4, null),
+        .buf = try allocator.allocWithOptions(u8, setup_reply_len, if (zig_atleast_15) .@"4" else 4, null),
     };
     log.debug("connect setup reply is {} bytes", .{connect_setup.buf.len});
     // const reader = SocketReader{ .context = sock };
@@ -421,7 +459,7 @@ fn connectSetupAuth(
 
     var addr_buf: [x11.max_sock_filter_addr]u8 = undefined;
     if (auth_filter.applySocket(sock, &addr_buf)) {
-        log.debug("applied address filter {}", .{auth_filter.addr});
+        log.debug("applied address filter {f}", .{auth_filter.addr});
     } else |err| {
         // not a huge deal, we'll just try all auth methods
         log.warn("failed to apply socket to auth filter with {s}", .{@errorName(err)});
@@ -433,7 +471,7 @@ fn connectSetupAuth(
         return null;
     }) |entry| {
         if (auth_filter.isFiltered(auth_mapped.mem, entry)) |reason| {
-            log.debug("ignoring auth because {s} does not match: {}", .{ @tagName(reason), entry.fmt(auth_mapped.mem) });
+            log.debug("ignoring auth because {s} does not match: {f}", .{ @tagName(reason), entry.fmt(auth_mapped.mem) });
             continue;
         }
         const name = entry.name(auth_mapped.mem);
@@ -446,7 +484,7 @@ fn connectSetupAuth(
             .ptr = data.ptr,
             .len = @intCast(data.len),
         };
-        log.debug("trying auth {}", .{entry.fmt(auth_mapped.mem)});
+        log.debug("trying auth {f}", .{entry.fmt(auth_mapped.mem)});
         if (try x11.ext.connectSetup(sock, name_x, data_x)) |reply_len|
             return reply_len;
     }
@@ -623,7 +661,7 @@ pub fn x11Socket() std.posix.socket_t {
 }
 
 fn staticCallback(comptime window_id: zin.StaticWindowId) *const fn (zin.Callback(.{ .static = window_id })) void {
-    return @alignCast(@ptrCast(global.static_callbacks[@intFromEnum(window_id)].?));
+    return @ptrCast(@alignCast(global.static_callbacks[@intFromEnum(window_id)].?));
 }
 
 pub fn staticWindow(window_id: zin.StaticWindowId) type {
