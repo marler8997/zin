@@ -284,13 +284,7 @@ pub fn connect(allocator: std.mem.Allocator, options: zin.ConnectOptions) zin.Co
 
         // Try no authentication
         log.debug("trying no auth", .{});
-        var msg_buf: [x11.connect_setup.getLen(0, 0)]u8 = undefined;
-        if (connectSetup(
-            sock,
-            &msg_buf,
-            .{ .ptr = undefined, .len = 0 },
-            .{ .ptr = undefined, .len = 0 },
-        ) catch |err| std.debug.panic(
+        if (x11.ext.connectSetup(sock, .empty, .empty) catch |err| std.debug.panic(
             "todo: handle connectSetup error {s}",
             .{@errorName(err)},
         )) |reply_len| {
@@ -454,62 +448,11 @@ fn connectSetupAuth(
             .len = @intCast(data.len),
         };
         log.debug("trying auth {}", .{entry.fmt(auth_mapped.mem)});
-        if (try connectSetupMaxAuth(sock, 1000, name_x, data_x)) |reply_len|
+        if (try x11.ext.connectSetup(sock, name_x, data_x)) |reply_len|
             return reply_len;
     }
 
     return null;
-}
-
-pub fn connectSetupMaxAuth(
-    sock: std.posix.socket_t,
-    comptime max_auth_len: usize,
-    auth_name: x11.Slice(u16, [*]const u8),
-    auth_data: x11.Slice(u16, [*]const u8),
-) !?u16 {
-    var buf: [x11.connect_setup.auth_offset + max_auth_len]u8 = undefined;
-    const len = x11.connect_setup.getLen(auth_name.len, auth_data.len);
-    if (len > max_auth_len)
-        return error.AuthTooBig;
-    return connectSetup(sock, buf[0..len], auth_name, auth_data);
-}
-
-pub fn connectSetup(
-    sock: std.posix.socket_t,
-    msg: []u8,
-    auth_name: x11.Slice(u16, [*]const u8),
-    auth_data: x11.Slice(u16, [*]const u8),
-) !?u16 {
-    std.debug.assert(msg.len == x11.connect_setup.getLen(auth_name.len, auth_data.len));
-
-    x11.connect_setup.serialize(msg.ptr, 11, 0, auth_name, auth_data);
-    try sendNoSequencing(sock, msg);
-
-    const reader = SocketReader{ .context = sock };
-    const connect_setup_header = try x11.readConnectSetupHeader(reader, .{});
-    switch (connect_setup_header.status) {
-        .failed => {
-            log.err("connect setup failed, version={}.{}, reason='{s}'", .{
-                connect_setup_header.proto_major_ver,
-                connect_setup_header.proto_minor_ver,
-                connect_setup_header.readFailReason(reader),
-            });
-            return error.ConnectSetupFailed;
-        },
-        .authenticate => {
-            log.err("AUTHENTICATE! not implemented", .{});
-            return error.NotImplemetned;
-        },
-        .success => {
-            // TODO: check version?
-            log.debug("SUCCESS! version {}.{}", .{ connect_setup_header.proto_major_ver, connect_setup_header.proto_minor_ver });
-            return connect_setup_header.getReplyLen();
-        },
-        else => |status| {
-            log.err("Error: expected 0, 1 or 2 as first byte of connect setup reply, but got {}", .{status});
-            return error.MalformedXReply;
-        },
-    }
 }
 
 pub fn registerDynamicWindowClass(
@@ -1387,6 +1330,7 @@ pub fn x11HandleMessage(msg_buf: []align(4) u8) !void {
                 },
             } else @panic("todo: configure_notify on dynamic windows");
         },
+        .generic_extension_event => |msg| std.debug.panic("unexpected generic_extension_event {}", .{msg}),
     }
 }
 
