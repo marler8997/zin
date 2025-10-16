@@ -34,11 +34,6 @@ pub fn panic(panic_opt: zin.PanicOptions) type {
     }.panic);
 }
 
-const SocketReader = std.io.Reader(std.posix.socket_t, std.posix.RecvFromError, readSocket);
-fn readSocket(sock: std.posix.socket_t, buffer: []u8) !usize {
-    return x11.readSock(sock, buffer, 0);
-}
-
 const this = @This();
 
 pub const ReadFullError = error{
@@ -46,6 +41,8 @@ pub const ReadFullError = error{
 
     EndOfStream,
     ConnectionResetByPeer,
+    InputOutput,
+    BrokenPipe,
     SocketNotConnected,
     NetworkSubsystemFailed,
 
@@ -57,17 +54,22 @@ pub fn readFull(sock: std.posix.socket_t, buf: []u8) ReadFullError!void {
     std.debug.assert(buf.len > 0);
     var total_received: usize = 0;
     while (total_received < buf.len) {
-        const last_received = (SocketReader{ .context = sock }).read(buf[total_received..]) catch |err| switch (err) {
+        const last_received = (std.net.Stream{ .handle = sock }).read(buf[total_received..]) catch |err| switch (err) {
             error.WouldBlock => unreachable, // socket should be blocking
-            error.SocketNotBound => unreachable,
-            error.MessageTooBig => unreachable, // shouldn't apply to stream sockets
             error.ConnectionTimedOut => unreachable, // we're already connected
-            error.ConnectionRefused => unreachable, // we're already connected
             error.ConnectionResetByPeer => return error.ConnectionResetByPeer,
+            error.InputOutput => return error.InputOutput,
+            error.BrokenPipe => return error.BrokenPipe,
             error.SystemResources => return error.SystemResources,
             error.SocketNotConnected => return error.SocketNotConnected,
-            error.NetworkSubsystemFailed => return error.NetworkSubsystemFailed,
             error.Unexpected => return error.Unexpected,
+            error.IsDir => unreachable,
+            error.NotOpenForReading => unreachable,
+            error.Canceled => unreachable,
+            error.AccessDenied => unreachable,
+            error.ProcessNotFound => unreachable,
+            error.LockViolation => unreachable, // windows only
+            error.OperationAborted => unreachable, // seems to be windows only
         };
         if (last_received == 0) return error.EndOfStream;
         total_received += last_received;
@@ -212,9 +214,6 @@ pub const Connection = struct {
         };
     }
 
-    pub fn reader(self: *const Connection) SocketReader {
-        return .{ .context = self.sock };
-    }
     pub fn sendOne(self: *Connection, data: []const u8) SendError!void {
         try this.sendNoSequencing(self.sock, data);
         self.sequence +%= 1;
