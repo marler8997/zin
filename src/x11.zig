@@ -45,7 +45,6 @@ pub const ReadFullError = error{
     SystemResources,
 
     EndOfStream,
-    ConnectionRefused,
     ConnectionResetByPeer,
     SocketNotConnected,
     NetworkSubsystemFailed,
@@ -63,7 +62,7 @@ pub fn readFull(sock: std.posix.socket_t, buf: []u8) ReadFullError!void {
             error.SocketNotBound => unreachable,
             error.MessageTooBig => unreachable, // shouldn't apply to stream sockets
             error.ConnectionTimedOut => unreachable, // we're already connected
-            error.ConnectionRefused => return error.ConnectionRefused,
+            error.ConnectionRefused => unreachable, // we're already connected
             error.ConnectionResetByPeer => return error.ConnectionResetByPeer,
             error.SystemResources => return error.SystemResources,
             error.SocketNotConnected => return error.SocketNotConnected,
