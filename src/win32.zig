@@ -30,7 +30,8 @@ pub fn panic(panic_opt: zin.PanicOptions) type {
     }.panic);
 }
 
-pub fn enforceDpiAware() zin.DpiAwarenessError!void {
+pub fn processInit(opt: zin.ProcessInitOptions) zin.ProcessInitError!void {
+    _ = opt;
     var awareness: win32.PROCESS_DPI_AWARENESS = undefined;
     {
         const hr = win32.GetProcessDpiAwareness(null, &awareness);
@@ -40,8 +41,8 @@ pub fn enforceDpiAware() zin.DpiAwarenessError!void {
         );
     }
     switch (awareness) {
-        .DPI_UNAWARE => return error.NoDpiAwareness,
-        .SYSTEM_DPI_AWARE => return error.OnlySystemDpiAwareness,
+        .DPI_UNAWARE => return error.Win32NoDpiAwareness,
+        .SYSTEM_DPI_AWARE => return error.Win32OnlySystemDpiAwareness,
         .PER_MONITOR_DPI_AWARE => {},
     }
 }

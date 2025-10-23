@@ -45,15 +45,14 @@ const global = struct {
 };
 
 pub fn main() !void {
-    var arena_instance: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
-    // no need to deinit
-    const arena = arena_instance.allocator();
+    // one-time process initialization
+    try zin.processInit(.{});
 
-    try zin.loadAppKit();
-    try zin.enforceDpiAware();
-
-    try zin.connect(arena, .{});
-    defer zin.disconnect(arena);
+    {
+        var err: zin.X11ConnectError = undefined;
+        zin.x11Connect(&err) catch std.debug.panic("X11 connect failed: {f}", .{err});
+    }
+    defer zin.x11Disconnect();
 
     const icons = getIcons(96, 96);
 
@@ -72,9 +71,7 @@ pub fn main() !void {
         .size = .{ .client_points = .{ .x = 300, .y = 200 } },
         .pos = null,
     });
-    // TODO: not working for x11 yet, closing the window
-    //       seems to close the entire X11 connection right now?
-    defer if (zin.platform_kind != .x11) zin.staticWindow(.main).destroy();
+    defer zin.staticWindow(.main).destroy();
     zin.staticWindow(.main).show();
     zin.staticWindow(.main).startTimer({}, 14);
 

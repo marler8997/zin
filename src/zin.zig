@@ -10,6 +10,8 @@ pub const Rgb8 = @import("Rgb8.zig");
 const win32 = @import("win32.zig");
 const x11 = @import("x11.zig");
 
+pub const zig_atleast_15 = @import("builtin").zig_version.order(.{ .major = 0, .minor = 15, .patch = 0 }) != .lt;
+
 const PlatformKind = enum {
     x11,
     win32,
@@ -43,41 +45,7 @@ pub const panic = platform.panic;
 pub fn getX11Display() []const u8 {
     return @import("x11").getDisplay();
 }
-pub const ConnectError = error{
-    // The X11 DISPLAY is invalid, call getX11Display to get the display string
-    BadX11Display,
 
-    BadXauthEnv,
-    XauthEnvFileNotFound,
-    BadKeymap,
-
-    AccessDenied,
-    SystemResources,
-    InputOutput,
-    SymLinkLoop,
-    FileBusy,
-
-    EndOfStream,
-    UnknownHostName,
-    ConnectionRefused,
-    ConnectionResetByPeer,
-    BrokenPipe,
-    SocketNotConnected,
-    NetworkSubsystemFailed,
-
-    Unexpected,
-
-    OutOfMemory,
-};
-pub const ConnectOptions = struct {
-    scratch: union(enum) {
-        // use a separate scrach arena backed by the standard page allocator
-        tmp_arena,
-        // share the persistent allocator
-        share,
-        custom: std.mem.Allocator,
-    } = .tmp_arena,
-};
 pub const Connection = if (platform_kind == .x11) x11.Connection else struct {
     pub fn deinit(self: Connection, allocator: std.mem.Allocator) void {
         _ = self;
@@ -92,11 +60,22 @@ pub const DpiAwarenessError = error{
     OnlySystemDpiAwareness,
 };
 
-pub fn loadAppKit() error{NSApplicationLoadFailed}!void {
-    if (platform_kind == .macos) {
-        try platform.loadAppKit();
-    }
-}
+pub const ProcessInitError = error{
+    NSApplicationLoadFailed,
+    Win32NoDpiAwareness,
+    Win32OnlySystemDpiAwareness,
+    X11WsaStartupFailed,
+    X11DisplayInvalidWtf8,
+    X11BadDisplay,
+    OutOfMemory,
+};
+pub const ProcessInitOptions = struct {
+    /// By default the x11 backend calls WSAStartup on windows, set this to false
+    /// to disable this behavior.
+    x11_wsa_startup: if (platform_kind == .x11) bool else void = if (platform_kind == .x11) true else {},
+};
+// one-time process initialization
+pub const processInit = platform.processInit;
 
 /// For Windows, enforces that the executable is DPI-aware.  This is supposed
 /// to be configured via a manifets file embedded inside the executable so rather
@@ -106,16 +85,33 @@ pub fn enforceDpiAware() DpiAwarenessError!void {
     if (builtin.os.tag == .windows) try win32.enforceDpiAware();
 }
 
+pub const X11ConnectError = if (platform_kind == .x11) x11.ConnectError else struct {
+    pub const format = if (zig_atleast_15) formatNew else formatLegacy;
+    fn formatNew(err: X11ConnectError, writer: *std.Io.Writer) error{WriteFailed}!void {
+        _ = err;
+        _ = writer;
+        unreachable;
+    }
+    fn formatLegacy(
+        err: X11ConnectError,
+        comptime fmt: []const u8,
+        options: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        _ = err;
+        _ = fmt;
+        _ = options;
+        _ = writer;
+        unreachable;
+    }
+};
 /// Connects to the X11 server, for non-X11 platforms does nothing.
-pub const connect = if (platform_kind == .x11) x11.connect else connectNoOp;
-fn connectNoOp(allocator: std.mem.Allocator, options: ConnectOptions) ConnectError!void {
-    _ = allocator;
-    _ = options;
+pub const x11Connect = if (platform_kind == .x11) x11.connect else connectNoOp;
+fn connectNoOp(err: *X11ConnectError) error{X11Connect}!void {
+    _ = err;
 }
-pub const disconnect = if (platform_kind == .x11) x11.disconnect else disconnectNoOp;
-fn disconnectNoOp(allocator: std.mem.Allocator) void {
-    _ = allocator;
-}
+pub const x11Disconnect = if (platform_kind == .x11) x11.disconnect else disconnectNoOp;
+fn disconnectNoOp() void {}
 
 pub const ConnectionPtr = if (platform_kind == .x11) *Connection else void;
 
@@ -490,10 +486,7 @@ pub const CreateWindowOptions = struct {
     pos: ?XY,
 };
 pub const CreateWindowError = error{
-    BrokenPipe,
-    ConnectionResetByPeer,
-    SystemResources,
-    NetworkSubsystemFailed,
+    WriteFailed,
 };
 pub const createDynamicWindow = platform.createDynamicWindow;
 

@@ -23,119 +23,23 @@ pub fn panic(panic_opt: zin.PanicOptions) type {
                 if (!thread_is_panicing) {
                     thread_is_panicing = true;
                     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-                    const msg_z: [:0]const u8 = if (std.fmt.allocPrintZ(
+                    const oom_msg = "allocate error message failed";
+                    const msg_z: [:0]const u8 = if (zig_atleast_15) std.fmt.allocPrintSentinel(
                         arena.allocator(),
                         "{s}",
                         .{msg},
-                    )) |msg_z| msg_z else |_| "failed allocate error message";
+                        0,
+                    ) catch oom_msg else std.fmt.allocPrintZ(
+                        arena.allocator(),
+                        "{s}",
+                        .{msg},
+                    ) catch oom_msg;
                     _ = @import("win32").everything.MessageBoxA(null, msg_z, panic_opt.title, panic_opt.win32_style);
                 }
             }
             std.debug.defaultPanic(msg, ret_addr);
         }
     }.panic);
-}
-
-const this = @This();
-
-pub const ReadFullError = error{
-    SystemResources,
-
-    EndOfStream,
-    ConnectionResetByPeer,
-    InputOutput,
-    BrokenPipe,
-    SocketNotConnected,
-    NetworkSubsystemFailed,
-
-    Unexpected,
-};
-
-/// socket is assumed to be in blocking mode, bound/connected.  Returns
-pub fn readFull(sock: std.posix.socket_t, buf: []u8) ReadFullError!void {
-    std.debug.assert(buf.len > 0);
-    var total_received: usize = 0;
-    while (total_received < buf.len) {
-        const last_received = (std.net.Stream{ .handle = sock }).read(buf[total_received..]) catch |err| if (zig_atleast_15) switch (err) {
-            error.WouldBlock => unreachable, // socket should be blocking
-            error.ConnectionTimedOut => unreachable, // we're already connected
-            error.ConnectionResetByPeer => return error.ConnectionResetByPeer,
-            error.InputOutput => return error.InputOutput,
-            error.BrokenPipe => return error.BrokenPipe,
-            error.SystemResources => return error.SystemResources,
-            error.SocketNotConnected => return error.SocketNotConnected,
-            error.NetworkSubsystemFailed => return error.NetworkSubsystemFailed,
-            error.Unexpected => return error.Unexpected,
-            error.IsDir => unreachable,
-            error.NotOpenForReading => unreachable,
-            error.Canceled => unreachable,
-            error.AccessDenied => unreachable,
-            error.ProcessNotFound => unreachable,
-            error.LockViolation => unreachable, // windows only
-            error.OperationAborted => unreachable, // seems to be windows only
-            error.MessageTooBig => unreachable, // probably UDP only
-            error.SocketNotBound => unreachable,
-        } else switch (err) {
-            error.WouldBlock => unreachable, // socket should be blocking
-            error.ConnectionTimedOut => unreachable, // we're already connected
-            error.ConnectionResetByPeer => return error.ConnectionResetByPeer,
-            error.InputOutput => return error.InputOutput,
-            error.BrokenPipe => return error.BrokenPipe,
-            error.SystemResources => return error.SystemResources,
-            error.SocketNotConnected => return error.SocketNotConnected,
-            error.Unexpected => return error.Unexpected,
-            error.IsDir => unreachable,
-            error.NotOpenForReading => unreachable,
-            error.Canceled => unreachable,
-            error.AccessDenied => unreachable,
-            error.ProcessNotFound => unreachable,
-            error.LockViolation => unreachable, // windows only
-            error.OperationAborted => unreachable, // seems to be windows only
-        };
-        if (last_received == 0) return error.EndOfStream;
-        total_received += last_received;
-    }
-}
-
-const SendError = error{
-    BrokenPipe,
-    ConnectionResetByPeer,
-    SystemResources,
-    NetworkSubsystemFailed,
-};
-fn sendNoSequencing(sock: std.posix.socket_t, data: []const u8) SendError!void {
-    var total_sent: usize = 0;
-    while (total_sent < data.len) {
-        const last_sent = x11.writeSock(sock, data[total_sent..], 0) catch |err| if (zig_atleast_15) switch (err) {
-            error.AccessDenied => unreachable,
-            error.WouldBlock => unreachable,
-            error.Unexpected => unreachable,
-            error.FileDescriptorNotASocket => unreachable,
-            error.FastOpenAlreadyInProgress => unreachable,
-            error.MessageTooBig => unreachable, // probably UDP specific
-            error.NetworkUnreachable => unreachable, // probably UDP specific
-            error.ConnectionRefused => unreachable, // should be impossible as we're already connected
-            error.BrokenPipe,
-            error.ConnectionResetByPeer,
-            error.SystemResources,
-            error.NetworkSubsystemFailed,
-            => |e| return e,
-        } else switch (err) {
-            error.AccessDenied => unreachable,
-            error.WouldBlock => unreachable,
-            error.Unexpected => unreachable,
-            error.FileDescriptorNotASocket => unreachable,
-            error.FastOpenAlreadyInProgress => unreachable,
-            error.MessageTooBig => unreachable, // probably UDP specific
-            error.NetworkUnreachable => unreachable, // probably UDP specific
-            error.BrokenPipe,
-            error.ConnectionResetByPeer,
-            error.SystemResources,
-            error.NetworkSubsystemFailed,
-            => |e| return e,
-        };
-        total_sent += last_sent;
-    }
 }
 
 // 1 id for the window
@@ -148,81 +52,94 @@ const FixedWindowObject = enum {
 };
 const fixed_ids_per_window: comptime_int = std.meta.fields(FixedWindowObject).len;
 
-const SupportedExtension = struct {
-    opcode: u8,
-    first_error: u8,
-};
-
-fn Extension(comptime name: []const u8) type {
-    return union(enum) {
+const Extension = struct {
+    name: x11.Slice(u16, [*]const u8),
+    state: union(enum) {
         not_queried,
         query_sent: struct { sequence: u16 },
-        unsupported,
-        supported: SupportedExtension,
-
-        const Self = @This();
-        pub fn get(self: *Self, connection: *Connection) !?SupportedExtension {
-            return switch (self.*) {
-                .not_queried => {
-                    const ext_name = comptime x11.Slice(u16, [*]const u8).initComptime(name);
-                    var msg: [x11.query_extension.getLen(x11.dbe.name.len)]u8 = undefined;
-                    x11.query_extension.serialize(&msg, ext_name);
-                    try connection.sendOne(&msg);
-                    self.* = .{ .query_sent = .{ .sequence = connection.sequence } };
-                    return null;
-                },
-                .query_sent, .unsupported => null,
-                .supported => |supported| supported,
-            };
-        }
-        pub fn onReply(self: *Self, reply_base: *x11.ServerMsg.Reply) error{MalformedX11Reply}!enum { not_handled, newly_unsupported, newly_supported } {
-            if (reply_base.sequence != switch (self.*) {
-                .query_sent => |query| query.sequence,
-                .not_queried, .unsupported, .supported => return .not_handled,
-            }) return .not_handled;
-
-            const reply: *x11.ServerMsg.QueryExtension = @ptrCast(reply_base);
-            if (reply.present == 0) {
-                log.info("extension '{f}': not present", .{x11.dbe.name});
-                global.connection.dbe = .unsupported;
-                return .newly_unsupported;
-            }
-            if (reply.present != 1) {
-                global.connection.dbe = .unsupported;
+        resolved: ?x11.Extension,
+    },
+    pub fn get(extension: *Extension, sink: *x11.RequestSink) error{WriteFailed}!?x11.Extension {
+        return switch (extension.state) {
+            .not_queried => {
+                try sink.QueryExtension(extension.name);
+                extension.state = .{ .query_sent = .{ .sequence = sink.sequence } };
+                return null;
+            },
+            .query_sent => null,
+            .resolved => |maybe_extension| maybe_extension,
+        };
+    }
+    pub fn onReply(
+        extension: *Extension,
+        source: *x11.Source,
+        reply: x11.servermsg.Reply,
+    ) !void {
+        if (reply.sequence != switch (extension.state) {
+            .query_sent => |query| query.sequence,
+            .not_queried, .resolved => return,
+        }) return;
+        const ext = try source.read3Full(.QueryExtension);
+        const present = switch (ext.present) {
+            .no => false,
+            .yes => true,
+            else => |v| {
                 log.err(
-                    "unexpected extension '{f}' reply present value {}",
-                    .{ x11.dbe.name, reply.present },
+                    "expected extension '{s}' present to be 0 or 1 but got {}",
+                    .{ extension.name.nativeSlice(), v },
                 );
-                return error.MalformedX11Reply;
-            }
+                return error.X11Protocol;
+            },
+        };
+        if (present) {
             log.info(
-                "extension '{f}': opcode={} base_error_code={}",
-                .{ x11.dbe.name, reply.major_opcode, reply.first_error },
+                "extension '{s}': bases opcode={} event={} error={}",
+                .{ extension.name.nativeSlice(), ext.opcode_base, ext.event_base, ext.error_base },
             );
-            global.connection.dbe = .{ .supported = .{
-                .opcode = reply.major_opcode,
-                .first_error = reply.first_error,
-            } };
-            return .newly_supported;
+        } else {
+            log.info("extension '{s}': not present", .{extension.name.nativeSlice()});
         }
-    };
-}
+        extension.state = .{ .resolved = x11.Extension{
+            .opcode_base = ext.opcode_base,
+            .event_base = ext.event_base,
+            .error_base = ext.error_base,
+        } };
+    }
+};
 
 pub const Connection = struct {
-    sock: std.posix.socket_t,
-    setup: x11.ConnectSetup,
-    screen: *align(4) x11.Screen,
+    sink: x11.RequestSink,
+    source: x11.Source,
+    setup: x11.Setup,
+    screen: x11.ScreenHeader,
     dpi_scale_x: f32,
     dpi_scale_y: f32,
+    depth: x11.Depth,
 
-    sequence: u16 = 0,
-
+    keymap: if (support_key_events) x11.keymap.Full else void,
     // TODO: we'll need some better mechanism for ids so we can't run out
     next_id_offset: u32 = 0,
+    dbe: Extension = .{ .name = x11.dbe.name, .state = .not_queried },
 
-    keymap: if (support_key_events) x11.keymap.Full else void = if (support_key_events) .initVoid() else undefined,
+    write_error: ?error{WriteFailed},
+    pub fn setWriteError(conn: *Connection, e: error{WriteFailed}) void {
+        std.debug.assert(conn.write_error == null);
+        conn.write_error = e;
+        if (global.io.socket_writer.err) |err| {
+            log.err("write to X11 socket failed with {s}", .{@errorName(err)});
+        } else {
+            log.err("write to X11 socket failed with unknown error", .{});
+        }
+    }
+    pub fn teeWriteError(conn: *Connection, e: error{WriteFailed}) error{WriteFailed} {
+        conn.setWriteError(e);
+        return e;
+    }
 
-    dbe: Extension(x11.dbe.name.nativeSlice()) = .not_queried,
+    pub fn x11FromRgb(conn: *const Connection, rgb: zin.Rgb8) u32 {
+        const rgb24: u24 = (@as(u24, rgb.r) << 16) | (@as(u24, rgb.g) << 8) | rgb.b;
+        return conn.depth.rgbFrom24(rgb24);
+    }
 
     fn windowFromId(self: *const Connection, id: x11.Window) Window {
         _ = self;
@@ -230,7 +147,7 @@ pub const Connection = struct {
         @panic("todo");
     }
     fn staticWindowFromX11Id(self: *const Connection, window: x11.Window) ?zin.StaticWindowId {
-        const id_offset = @intFromEnum(window) - @intFromEnum(self.setup.fixed().resource_id_base);
+        const id_offset = @intFromEnum(window) - @intFromEnum(self.setup.resource_id_base);
         if (id_offset < static_window_count * fixed_ids_per_window) return @as(zin.StaticWindowId, @enumFromInt(@divTrunc(id_offset, fixed_ids_per_window)));
         return null;
     }
@@ -249,27 +166,15 @@ pub const Connection = struct {
         };
     }
 
-    pub fn sendOne(self: *Connection, data: []const u8) SendError!void {
-        try this.sendNoSequencing(self.sock, data);
-        self.sequence +%= 1;
-    }
-    pub fn sendMultiple(self: *Connection, message_count: u16, data: []const u8) SendError!void {
-        try this.sendNoSequencing(self.sock, data);
-        self.sequence +%= message_count;
-    }
-    // TODO: how should we do error handling here?
-    fn sendOneOrPanic(self: *Connection, data: []const u8) void {
-        self.sendOne(data) catch |e| std.debug.panic("send over X11 socket failed with {s}", .{@errorName(e)});
-    }
     pub fn staticWindowId(self: *const Connection, id: zin.StaticWindowId) x11.Window {
-        return self.setup.fixed().resource_id_base.add(@as(u32, @intFromEnum(id)) * fixed_ids_per_window).window();
+        return self.setup.resource_id_base.add(@as(u32, @intFromEnum(id)) * fixed_ids_per_window).window();
     }
     pub fn staticWindowGc(self: *const Connection, id: zin.StaticWindowId) x11.GraphicsContext {
         return self.setup.fixed().resource_id_base.add(@as(u32, @intFromEnum(id)) * fixed_ids_per_window + 1).graphicsContext();
     }
 
     fn reserveId(self: *Connection) x11.Resource {
-        const resource = self.setup.fixed().resource_id_base.add(@intCast(static_window_count * fixed_ids_per_window + self.next_id_offset));
+        const resource = self.setup.resource_id_base.add(@intCast(static_window_count * fixed_ids_per_window + self.next_id_offset));
         self.next_id_offset += 1;
         return resource;
     }
@@ -283,150 +188,163 @@ pub const Connection = struct {
     }
 };
 
-pub fn connect(allocator: std.mem.Allocator, options: zin.ConnectOptions) zin.ConnectError!void {
+pub fn processInit(opt: zin.ProcessInitOptions) zin.ProcessInitError!void {
+    std.debug.assert(!global.process_init_called);
+    global.process_init_called = true;
+
     if (builtin.os.tag == .windows) {
-        var data: win32.WSAData = undefined;
-        const result = win32.WSAStartup((@as(u16, 2) << 8) | 2, &data);
-        if (result != 0) std.debug.panic("WSAStartup failed, error={}", .{result});
-    }
-
-    const display = x11.getDisplay();
-    const parsed_display = x11.parseDisplay(display) catch {
-        log.err("bad DISPLAY '{s}'", .{display});
-        return error.BadX11Display;
-    };
-
-    const sock = try x11.connect(display, parsed_display);
-    errdefer x11.disconnect(sock);
-
-    var tmp_arena_instance: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
-    defer tmp_arena_instance.deinit();
-    const scratch = switch (options.scratch) {
-        .tmp_arena => tmp_arena_instance.allocator(),
-        .share => allocator,
-        .custom => |a| a,
-    };
-
-    const setup_reply_len: u16 = blk: {
-        if (x11.getAuthFilename(scratch) catch |err| switch (err) {
-            else => |e| return e,
-        }) |auth_filename| {
-            defer auth_filename.deinit(scratch);
-            if (connectSetupAuth(parsed_display.display_num, sock, auth_filename.str) catch |err| std.debug.panic(
-                "todo: handle connectSetupAuth error '{s}'",
-                .{@errorName(err)},
-            )) |reply_len|
-                break :blk reply_len;
-        }
-
-        // Try no authentication
-        log.debug("trying no auth", .{});
-        if (x11.ext.connectSetup(sock, .empty, .empty) catch |err| std.debug.panic(
-            "todo: handle connectSetup error {s}",
-            .{@errorName(err)},
-        )) |reply_len| {
-            break :blk reply_len;
-        }
-
-        log.err("the X server rejected our connect setup message", .{});
-        std.process.exit(0xff);
-    };
-
-    const connect_setup = x11.ConnectSetup{
-        .buf = try allocator.allocWithOptions(u8, setup_reply_len, if (zig_atleast_15) .@"4" else 4, null),
-    };
-    log.debug("connect setup reply is {} bytes", .{connect_setup.buf.len});
-    // const reader = SocketReader{ .context = sock };
-    try readFull(sock, connect_setup.buf);
-
-    const fixed = connect_setup.fixed();
-    inline for (@typeInfo(@TypeOf(fixed.*)).@"struct".fields) |field| {
-        switch (field.type) {
-            u8, u16, u32 => log.debug("{s}: {any}", .{ field.name, @field(fixed, field.name) }),
-            x11.ResourceBase => log.debug("{s}: {d}", .{ field.name, @intFromEnum(@field(fixed, field.name)) }),
-            x11.NonExhaustive(x11.ImageByteOrder) => log.debug("{s}: {s}", .{ field.name, @tagName(@field(fixed, field.name)) }),
-            else => @compileError("log connect setup type '" ++ @typeName(field.type) ++ "' is not implemented"),
+        if (opt.x11_wsa_startup) {
+            var data: win32.WSAData = undefined;
+            const result = win32.WSAStartup((@as(u16, 2) << 8) | 2, &data);
+            if (result != 0) {
+                log.err("WSAStartup failed, error={}", .{result});
+                return error.X11WsaStartupFailed;
+            }
         }
     }
-    log.debug("vendor: {s}", .{connect_setup.getVendorSlice(fixed.vendor_len) catch |e| switch (e) {
-        error.XMalformedReply_VendorLenTooBig => @panic("X server malformed reply (vendor len too big)"),
-    }});
-    const format_list_offset = x11.ConnectSetup.getFormatListOffset(fixed.vendor_len);
-    const format_list_limit = x11.ConnectSetup.getFormatListLimit(format_list_offset, fixed.format_count);
-    log.debug("fmt list off={} limit={}", .{ format_list_offset, format_list_limit });
-    const formats = connect_setup.getFormatList(format_list_offset, format_list_limit) catch |e| switch (e) {
-        error.XMalformedReply_FormatCountTooBig => @panic("X server malformed reply (format count too big)"),
+    global.display = x11.getDisplay() catch |err| switch (err) {
+        error.InvalidWtf8 => return error.X11DisplayInvalidWtf8,
+        error.OutOfMemory => return error.OutOfMemory,
     };
-    for (formats, 0..) |format, i| {
-        log.debug("format[{}] depth={:3} bpp={:3} scanpad={:3}", .{ i, format.depth, format.bits_per_pixel, format.scanline_pad });
-    }
-    const screen = connect_setup.getFirstScreenPtr(format_list_limit);
-    inline for (@typeInfo(@TypeOf(screen.*)).@"struct".fields) |field| {
-        log.debug("SCREEN 0| {s}: {any}", .{ field.name, @field(screen, field.name) });
-    }
-
-    global.connection = Connection{
-        .sock = sock,
-        .setup = connect_setup,
-        .screen = screen,
-        .dpi_scale_x = dpiScaleFromPixelMm(screen.pixel_width, screen.mm_width),
-        .dpi_scale_y = dpiScaleFromPixelMm(screen.pixel_height, screen.mm_height),
+    log.info("X11 DISPLAY {f}", .{global.display});
+    global.parsed_display = x11.parseDisplay(global.display) catch |err| {
+        log.err("invalid X11 DISPLAY {f}: {s}", .{ global.display, @errorName(err) });
+        return error.X11BadDisplay;
     };
-    log.debug("DPI {d:.2}x{d:.2}", .{ global.connection.dpi_scale_x, global.connection.dpi_scale_y });
-
-    if (support_key_events) {
-        const keycode_count: u8 = fixed.max_keycode - fixed.min_keycode + 1;
-
-        {
-            var msg: [x11.get_keyboard_mapping.len]u8 = undefined;
-            x11.get_keyboard_mapping.serialize(&msg, fixed.min_keycode, keycode_count);
-            try global.connection.sendOne(&msg);
-        }
-
-        var header: [32]u8 align(4) = undefined;
-        try readFull(sock, &header);
-
-        {
-            const generic: *x11.ServerMsg.Generic = @ptrCast(&header);
-            // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-            // TODO: this shouldn't be a panic
-            if (generic.kind != .reply) std.debug.panic(
-                "GetKeyboardMapping failed, expected 'reply' but got '{}': {}",
-                .{
-                    generic.kind,
-                    generic,
-                },
-            );
-        }
-
-        const reply: *x11.ServerMsg.GetKeyboardMapping = @ptrCast(&header);
-        const syms_len = x11.readIntNative(u32, header[4..]);
-        std.debug.assert(@as(usize, reply.syms_per_code) * @as(usize, keycode_count) == syms_len);
-
-        const syms = try scratch.alloc(u32, syms_len);
-        errdefer scratch.free(syms);
-
-        try readFull(sock, @as([*]u8, @ptrCast(syms.ptr))[0 .. syms_len * 4]);
-
-        global.connection.keymap.load(fixed.min_keycode, .{
-            .keycode_count = keycode_count,
-            .syms_per_code = reply.syms_per_code,
-            .syms = syms,
-        }) catch |err| switch (err) {
-            error.MinKeycodeTooSmall,
-            error.KeycodeCountTooBig,
-            error.KeyMap0SymsPerCode,
-            => {
-                log.err("invalid keymap from server ({s})", .{@errorName(err)});
-                return error.BadKeymap;
-            },
-        };
-    }
+    global.address = x11.getAddress(global.display, &global.parsed_display) catch |err| switch (err) {
+        error.X11BadDisplay => |e| {
+            log.err("invalid X11 DISPLAY {f}", .{global.display});
+            return e;
+        },
+    };
 }
-pub fn disconnect(allocator: std.mem.Allocator) void {
-    allocator.free(global.connection.setup.buf);
-    x11.disconnect(global.connection.sock);
-    global.connection = undefined;
+
+pub const ConnectError = union(enum) {
+    connect_error: x11.ConnectError,
+    recv_error: (error{EndOfStream} || x11.SocketReader.Error),
+    send_error: x11.SocketWriter.Error,
+    protocol_error: enum { setup, setup_dynamic, depth, keycode_range, unexpected_msg },
+    cant_authenticate,
+    no_screen,
+
+    fn set(err: *ConnectError, value: ConnectError) error{X11Connect} {
+        err.* = value;
+        return error.X11Connect;
+    }
+
+    pub const format = if (zig_atleast_15) formatNew else formatLegacy;
+    fn formatNew(err: ConnectError, writer: *std.Io.Writer) error{WriteFailed}!void {
+        try err.formatLegacy("", .{}, writer);
+    }
+    fn formatLegacy(
+        err: ConnectError,
+        comptime fmt: []const u8,
+        options: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        _ = fmt;
+        _ = options;
+        switch (err) {
+            .connect_error => |e| try writer.print("socket connect failed with {s}", .{@errorName(e)}),
+            .recv_error => |e| try writer.print("socket receive failed with {s}", .{@errorName(e)}),
+            .send_error => |e| try writer.print("socket send failed with {s}", .{@errorName(e)}),
+            .protocol_error => |e| try writer.print("server protocol error: {s}", .{@tagName(e)}),
+            .cant_authenticate => try writer.writeAll("failed to authenticate"),
+            .no_screen => try writer.writeAll("server reported no screens"),
+        }
+    }
+};
+pub fn connect(out_err: *ConnectError) error{X11Connect}!void {
+    std.debug.assert(global.process_init_called);
+    std.debug.assert(global.conn == null);
+    global.io = x11.connect(
+        global.address,
+        &global.write_buffer,
+        &global.read_buffer,
+    ) catch |err| {
+        return out_err.set(.{ .connect_error = err });
+    };
+    errdefer {
+        global.io.shutdown();
+        std.posix.close(global.io.stream().handle);
+        global.io = undefined;
+    }
+    log.info("connected to {f}", .{global.address});
+    x11.draft.authenticate(
+        global.display,
+        global.parsed_display,
+        global.address,
+        &global.io,
+    ) catch |err| switch (err) {
+        error.X11Authentication => return out_err.set(.cant_authenticate),
+    };
+    var sink: x11.RequestSink = .{ .writer = &global.io.socket_writer.interface };
+    var source: x11.Source = .{ .reader = global.io.socket_reader.interface() };
+    const setup = source.readSetup() catch |err| switch (err) {
+        error.ReadFailed => return out_err.set(.{
+            .recv_error = global.io.socket_reader.getError() orelse error.Unexpected,
+        }),
+        error.EndOfStream => return out_err.set(.{ .recv_error = error.EndOfStream }),
+        error.X11Protocol => return out_err.set(.{ .protocol_error = .setup }),
+    };
+    std.log.info("setup reply {f}", .{setup});
+    const screen = (x11.draft.readSetupDynamic(&source, &setup, .{}) catch |err| switch (err) {
+        error.ReadFailed => return out_err.set(.{
+            .recv_error = global.io.socket_reader.getError() orelse error.Unexpected,
+        }),
+        error.EndOfStream => return out_err.set(.{ .recv_error = error.EndOfStream }),
+        error.X11Protocol => return out_err.set(.{ .protocol_error = .setup_dynamic }),
+    }) orelse return out_err.set(.no_screen);
+
+    const dpi_scale_x = dpiScaleFromPixelMm(screen.pixel_width, screen.mm_width);
+    const dpi_scale_y = dpiScaleFromPixelMm(screen.pixel_height, screen.mm_height);
+    log.debug("DPI {d:.2}x{d:.2}", .{ dpi_scale_x, dpi_scale_y });
+    const depth = x11.Depth.init(screen.root_depth) orelse {
+        log.err("unsupported screen depth {}", .{screen.root_depth});
+        return out_err.set(.{ .protocol_error = .depth });
+    };
+
+    const keymap: if (support_key_events) x11.keymap.Full else void = blk: {
+        if (!support_key_events) break :blk {};
+
+        const keycode_range = x11.KeycodeRange.init(
+            setup.min_keycode,
+            setup.max_keycode,
+        ) catch return out_err.set(.{ .protocol_error = .keycode_range });
+        // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+        // TODO: should the initSynchronous function take the keymap by reference instead
+        break :blk x11.keymap.Full.initSynchronous(
+            &sink,
+            &source,
+            keycode_range,
+        ) catch |err| return switch (err) {
+            error.WriteFailed => return out_err.set(.{ .send_error = global.io.socket_writer.err orelse error.Unexpected }),
+            error.ReadFailed => return out_err.set(.{
+                .recv_error = global.io.socket_reader.getError() orelse error.Unexpected,
+            }),
+            error.EndOfStream => return out_err.set(.{ .recv_error = error.EndOfStream }),
+            error.X11Protocol => return out_err.set(.{ .protocol_error = .setup_dynamic }),
+            error.UnexpectedMessage => return out_err.set(.{ .protocol_error = .unexpected_msg }),
+        };
+    };
+    global.conn = .{
+        .sink = sink,
+        .source = source,
+        .setup = setup,
+        .screen = screen,
+        .dpi_scale_x = dpi_scale_x,
+        .dpi_scale_y = dpi_scale_y,
+        .depth = depth,
+        .keymap = keymap,
+        .write_error = null,
+    };
+}
+pub fn disconnect() void {
+    std.debug.assert(global.conn != null);
+    global.conn = null;
+    global.io.shutdown();
+    std.posix.close(global.io.stream().handle);
+    global.io = undefined;
 }
 
 fn dpiScaleFromPixelMm(pixels: u16, millimeters: u16) f32 {
@@ -437,60 +355,6 @@ fn dpiScaleFromPixelMm(pixels: u16, millimeters: u16) f32 {
 // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 // TODO: this shouldn't be hardcoded, instead, it should be based on the app config
 const support_key_events = true;
-
-fn connectSetupAuth(
-    display_num: ?x11.DisplayNum,
-    sock: std.posix.socket_t,
-    auth_filename: []const u8,
-) !?u16 {
-    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    // TODO: test bad auth
-    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    //if (try connectSetupMaxAuth(sock, 1000, .{ .ptr = "wat", .len = 3}, .{ .ptr = undefined, .len = 0})) |_|
-    //    @panic("todo");
-
-    const auth_mapped = try x11.MappedFile.init(auth_filename, .{});
-    defer auth_mapped.unmap();
-
-    var auth_filter = x11.AuthFilter{
-        .addr = .{ .family = .wild, .data = &[0]u8{} },
-        .display_num = display_num,
-    };
-
-    var addr_buf: [x11.max_sock_filter_addr]u8 = undefined;
-    if (auth_filter.applySocket(sock, &addr_buf)) {
-        log.debug("applied address filter {f}", .{auth_filter.addr});
-    } else |err| {
-        // not a huge deal, we'll just try all auth methods
-        log.warn("failed to apply socket to auth filter with {s}", .{@errorName(err)});
-    }
-
-    var auth_it = x11.AuthIterator{ .mem = auth_mapped.mem };
-    while (auth_it.next() catch {
-        log.warn("auth file '{s}' is invalid", .{auth_filename});
-        return null;
-    }) |entry| {
-        if (auth_filter.isFiltered(auth_mapped.mem, entry)) |reason| {
-            log.debug("ignoring auth because {s} does not match: {f}", .{ @tagName(reason), entry.fmt(auth_mapped.mem) });
-            continue;
-        }
-        const name = entry.name(auth_mapped.mem);
-        const data = entry.data(auth_mapped.mem);
-        const name_x = x11.Slice(u16, [*]const u8){
-            .ptr = name.ptr,
-            .len = @intCast(name.len),
-        };
-        const data_x = x11.Slice(u16, [*]const u8){
-            .ptr = data.ptr,
-            .len = @intCast(data.len),
-        };
-        log.debug("trying auth {f}", .{entry.fmt(auth_mapped.mem)});
-        if (try x11.ext.connectSetup(sock, name_x, data_x)) |reply_len|
-            return reply_len;
-    }
-
-    return null;
-}
 
 pub fn registerDynamicWindowClass(
     comptime config: zin.WindowConfigData,
@@ -513,18 +377,6 @@ pub const WindowClass = struct {
     }
 };
 
-pub fn makeCallback(
-    comptime config: zin.WindowConfig,
-    comptime class: zin.WindowClassDefinition(config),
-) *const fn () void {
-    _ = class;
-    return (struct {
-        pub fn callback() void {
-            @panic("todo");
-        }
-    }).callback;
-}
-
 pub const DynamicWindow = Window;
 const Window = struct {
     id: x11.Window,
@@ -539,9 +391,9 @@ const Window = struct {
         global.connection.sendOneOrPanic(&msg);
     }
     pub fn show(self: DynamicWindow) void {
-        var msg: [x11.map_window.len]u8 = undefined;
-        x11.map_window.serialize(&msg, self.id);
-        global.connection.sendOneOrPanic(&msg);
+        if (global.conn.?.write_error == null) {
+            global.conn.?.sink.MapWindow(self.id) catch |e| global.conn.?.setWriteError(e);
+        }
     }
     pub fn startTimer(self: DynamicWindow, id: usize, millis: u32) void {
         _ = self;
@@ -556,7 +408,17 @@ const static_window_count = @typeInfo(zin.StaticWindowId).@"enum".fields.len;
 pub const min_timer_id_int = 0;
 
 pub const global = struct {
-    pub var connection: Connection = undefined;
+    var process_init_called: bool = false;
+    var display: x11.Display = undefined;
+    var parsed_display: x11.ParsedDisplay = undefined;
+    var address: x11.Address = undefined;
+
+    var write_buffer: [zin.config.x11_write_buffer_size]u8 = undefined;
+    var read_buffer: [zin.config.x11_read_buffer_size]u8 = undefined;
+    // guaranteed to be initialized while conn is not null
+    var io: x11.Io = undefined;
+    pub var conn: ?Connection = null;
+
     var static_callbacks: [static_window_count]?*const anyopaque = @splat(null);
     var static_window_common_states: [static_window_count]StaticWindowCommonState = @splat(.not_created);
     var static_window_custom_states: StaticWindowCustomStates = .{};
@@ -672,7 +534,7 @@ pub fn staticWindow(window_id: zin.StaticWindowId) type {
 
         fn window() Window {
             return .{
-                .id = global.connection.staticWindowId(window_id),
+                .id = global.conn.?.staticWindowId(window_id),
                 .callback = global.static_callbacks[@intFromEnum(window_id)].?,
             };
         }
@@ -691,9 +553,9 @@ pub fn staticWindow(window_id: zin.StaticWindowId) type {
         }
         pub fn create(opt: zin.CreateWindowOptions) zin.CreateWindowError!void {
             //std.debug.assert(global.static_windows[@intFromEnum(window_id)] == null);
-            const bg = x11FromRgb(config.data().background);
-            const size = windowPixelSizeFromInit(opt.size, global.connection.dpi_scale_x, global.connection.dpi_scale_y);
-            try createWindow(&config.data(), size, bg, global.connection.staticWindowId(window_id));
+            const bg = global.conn.?.x11FromRgb(config.data().background);
+            const size = windowPixelSizeFromInit(opt.size, global.conn.?.dpi_scale_x, global.conn.?.dpi_scale_y);
+            try createWindow(&config.data(), size, bg, global.conn.?.staticWindowId(window_id));
             global.static_window_common_states[@intFromEnum(window_id)] = .{ .created = .{
                 .damaged = false,
             } };
@@ -710,25 +572,26 @@ pub fn staticWindow(window_id: zin.StaticWindowId) type {
             switch (window_id.getConfig().x11.render_kind) {
                 .immediate => {},
                 .double_buffered => if (global.staticWindowCustomState(window_id).back_buffer.allocated) {
-                    var msg: [x11.dbe.deallocate.len]u8 = undefined;
-                    x11.dbe.deallocate.serialize(&msg, .{
-                        .ext_opcode = global.connection.dbe.supported.opcode,
-                        .backbuffer = backBufferFromWindow(global.connection.staticWindowId(window_id)),
-                    });
-                    global.connection.sendOne(&msg) catch |e| giveup("send XDBE deallocate", e);
-                    global.staticWindowCustomState(window_id).back_buffer.allocated = false;
+                    if (global.conn.?.write_error != null) {
+                        x11.dbe.Deallocate(
+                            &global.conn.?.sink,
+                            global.conn.?.dbe.state.resolved.?.opcode_base,
+                            backBufferFromWindow(global.conn.?.staticWindowId(window_id)),
+                        ) catch |e| global.conn.?.setWriteError(e);
+                    }
                 },
             }
 
-            var msg_pair: [x11.free_gc.len + x11.destroy_window.len]u8 = undefined;
-            x11.free_gc.serialize(msg_pair[0..x11.free_gc.len], gcFromWindow(global.connection.staticWindowId(window_id)));
-            x11.destroy_window.serialize(msg_pair[x11.free_gc.len..], global.connection.staticWindowId(window_id));
-            // TODO: handle this error somehow, probably by modifying global
-            //       state to invalidate the connection or something
-            global.connection.sendMultiple(2, &msg_pair) catch |e| std.debug.panic(
-                "send over X11 socket failed with {s}",
-                .{@errorName(e)},
-            );
+            if (global.conn.?.write_error == null) {
+                global.conn.?.sink.FreeGc(
+                    gcFromWindow(global.conn.?.staticWindowId(window_id)),
+                ) catch |e| global.conn.?.setWriteError(e);
+            }
+            if (global.conn.?.write_error == null) {
+                global.conn.?.sink.DestroyWindow(
+                    global.conn.?.staticWindowId(window_id),
+                ) catch |e| global.conn.?.setWriteError(e);
+            }
             global.static_window_common_states[@intFromEnum(window_id)] = .not_created;
             global.staticWindowCustomState(window_id).onDestroyed();
         }
@@ -785,7 +648,7 @@ fn windowPixelSizeFromInit(init: zin.WindowSizeInit, dpi_scale_x: f32, dpi_scale
 }
 
 pub fn createDynamicWindow(class: WindowClass, opt: zin.CreateWindowOptions) zin.CreateWindowError!DynamicWindow {
-    const window_id = global.connection.reserveId().window();
+    const window_id = global.conn.?.reserveId().window();
     errdefer global.connection.releaseId(window_id.resource());
     //const bg = x11FromRgb((zin.WindowConfig{ .static = window_id }).data().background);
     if (true) @panic("todo: get the background from the window config");
@@ -799,62 +662,53 @@ fn createWindow(
     bg: u32,
     id: x11.Window,
 ) zin.CreateWindowError!void {
-    {
-        var msg_buf: [x11.create_window.max_len]u8 = undefined;
-        const len = x11.create_window.serialize(&msg_buf, .{
-            .window_id = id,
-            .parent_window_id = global.connection.screen.root,
-            .depth = 0, // we don't care, just inherit from the parent
-            .x = 0,
-            .y = 0,
-            .width = @intCast(size.x),
-            .height = @intCast(size.y),
-            .border_width = 0, // TODO: what is this?
-            .class = .input_output,
-            .visual_id = global.connection.screen.root_visual,
-        }, .{
-            // .bg_pixmap = .copy_from_parent,
-            .bg_pixel = bg,
-            // .border_pixmap =
-            // .border_pixel = 0x01fa8ec9,
-            // .bit_gravity = .north_west,
-            // .win_gravity = .east,
-            // .backing_store = .when_mapped,
-            // .backing_planes = 0x1234,
-            // .backing_pixel = 0xbbeeeeff,
-            // .override_redirect = true,
-            // .save_under = true,
-            .event_mask = .{
-                .key_press = 1,
-                .key_release = 1,
-                .button_press = if (config.mouse_events) 1 else 0,
-                .button_release = if (config.mouse_events) 1 else 0,
-                .enter_window = if (config.mouse_events) 1 else 0,
-                .leave_window = if (config.mouse_events) 1 else 0,
-                .pointer_motion = if (config.mouse_events) 1 else 0,
-                .keymap_state = 1,
-                .exposure = 1,
-                // results CirculateNotify, GravityNotify, ConfigureNotify, ReparentNotify, MapNotify
-                // UnmapNotify, DestroyNotify
-                .structure_notify = if (config.window_size_events) 1 else 0,
-            },
-            // .dont_propagate = 1,
-        });
-        try global.connection.sendOne(msg_buf[0..len]);
-    }
-
-    // TODO: send both the create_window/create_gc messages in the same buffer
-    {
-        var msg_buf: [x11.create_gc.max_len]u8 = undefined;
-        const len = x11.create_gc.serialize(&msg_buf, .{
-            .gc_id = gcFromWindow(id),
-            .drawable_id = id.drawable(),
-        }, .{
+    if (global.conn.?.write_error) |e| return e;
+    global.conn.?.sink.CreateWindow(.{
+        .window_id = id,
+        .parent_window_id = global.conn.?.screen.root,
+        .depth = 0, // we don't care, just inherit from the parent
+        .x = 0,
+        .y = 0,
+        .width = @intCast(size.x),
+        .height = @intCast(size.y),
+        .border_width = 0, // TODO: what is this?
+        .class = .input_output,
+        .visual_id = global.conn.?.screen.root_visual,
+    }, .{
+        // .bg_pixmap = .copy_from_parent,
+        .bg_pixel = bg,
+        // .border_pixmap =
+        // .border_pixel = 0x01fa8ec9,
+        // .bit_gravity = .north_west,
+        // .win_gravity = .east,
+        // .backing_store = .when_mapped,
+        // .backing_planes = 0x1234,
+        // .backing_pixel = 0xbbeeeeff,
+        // .override_redirect = true,
+        // .save_under = true,
+        .event_mask = .{
+            .KeyPress = 1,
+            .KeyRelease = 1,
+            .ButtonPress = if (config.mouse_events) 1 else 0,
+            .ButtonRelease = if (config.mouse_events) 1 else 0,
+            // .EnterWindow = if (config.mouse_events) 1 else 0,
+            // .LeaveWindow = if (config.mouse_events) 1 else 0,
+            .PointerMotion = if (config.mouse_events) 1 else 0,
+            .Exposure = 1,
+            // results CirculateNotify, GravityNotify, ConfigureNotify, ReparentNotify, MapNotify
+            // UnmapNotify, DestroyNotify
+            .StructureNotify = if (config.window_size_events) 1 else 0,
+        },
+        // .dont_propagate = 1,
+    }) catch |e| return global.conn.?.teeWriteError(e);
+    global.conn.?.sink.CreateGc(
+        gcFromWindow(id),
+        id.drawable(),
+        .{
             .background = bg,
             .foreground = 0x224477bb,
-        });
-        try global.connection.sendOne(msg_buf[0..len]);
-    }
+        },
+    ) catch |e| return global.conn.?.teeWriteError(e);
 }
 
 pub const VirtualKey = enum(u16) {
@@ -951,14 +805,16 @@ fn mouseButtonFromMsg(detail: u8) zin.MouseButtonId {
     };
 }
 
-fn drawStaticWindow(comptime window_id: zin.StaticWindowId) SendError!enum { not_created, success } {
+fn drawStaticWindow(comptime window_id: zin.StaticWindowId) error{WriteFailed}!enum { not_created, success } {
+    if (global.conn.?.write_error) |e| return e;
+
     switch (global.static_window_common_states[@intFromEnum(window_id)]) {
         .not_created => return .not_created,
         .created => {},
     }
 
     const config = zin.WindowConfig{ .static = window_id };
-    const window = global.connection.staticWindowId(window_id);
+    const window = global.conn.?.staticWindowId(window_id);
     const UseBackBuffer = switch (window_id.getConfig().x11.render_kind) {
         .immediate => void,
         .double_buffered => bool,
@@ -968,15 +824,14 @@ fn drawStaticWindow(comptime window_id: zin.StaticWindowId) SendError!enum { not
         .double_buffered => {
             if (global.staticWindowCustomState(window_id).back_buffer.allocated)
                 break :blk true;
-            if (global.connection.dbe.get(&global.connection) catch null) |dbe| {
-                var msg: [x11.dbe.allocate.len]u8 = undefined;
-                x11.dbe.allocate.serialize(&msg, .{
-                    .ext_opcode = dbe.opcode,
-                    .window = window,
-                    .backbuffer = backBufferFromWindow(window),
-                    .swapaction = .background,
-                });
-                global.connection.sendOne(&msg) catch |e| giveup("dbe allocate", e);
+            if (try global.conn.?.dbe.get(&global.conn.?.sink)) |dbe| {
+                try x11.dbe.Allocate(
+                    &global.conn.?.sink,
+                    dbe.opcode_base,
+                    window,
+                    backBufferFromWindow(window),
+                    .background,
+                );
                 global.staticWindowCustomState(window_id).back_buffer.allocated = true;
                 break :blk true;
             }
@@ -984,39 +839,26 @@ fn drawStaticWindow(comptime window_id: zin.StaticWindowId) SendError!enum { not
         },
     };
 
-    {
-        var maybe_send_error: ?SendError = null;
-        staticCallback(window_id)(.{ .draw = .{
-            .error_ref = &maybe_send_error,
-            .window = window,
-            .use_back_buffer = use_back_buffer,
-            .client_size = if (config.data().window_size_events) global.staticWindowCustomState(window_id).client_size else {},
-            .background = if (comptime config.data().dynamic_background) config.data().background else {},
-        } });
-        if (maybe_send_error) |e| return e;
-    }
+    staticCallback(window_id)(.{ .draw = .{
+        .window = window,
+        .use_back_buffer = use_back_buffer,
+        .client_size = if (config.data().window_size_events) global.staticWindowCustomState(window_id).client_size else {},
+        .background = if (comptime config.data().dynamic_background) config.data().background else {},
+    } });
+    if (global.conn.?.write_error) |e| return e;
 
     switch (window_id.getConfig().x11.render_kind) {
         .immediate => {},
         .double_buffered => if (use_back_buffer) {
-            const swap_infos = [_]x11.dbe.SwapInfo{
+            try x11.dbe.Swap(&global.conn.?.sink, global.conn.?.dbe.state.resolved.?.opcode_base, .initAssume(&.{
                 .{ .window = window, .action = .background },
-            };
-            var msg: [x11.dbe.swap.getLen(swap_infos.len)]u8 = undefined;
-            const swap_infos_x11: x11.Slice(u32, [*]const x11.dbe.SwapInfo) = .{
-                .ptr = &swap_infos,
-                .len = swap_infos.len,
-            };
-            x11.dbe.swap.serialize(&msg, swap_infos_x11, .{
-                .ext_opcode = global.connection.dbe.supported.opcode,
-            });
-            global.connection.sendOne(&msg) catch |e| giveup("send swap", e);
+            }));
         },
     }
     return .success;
 }
 
-pub fn x11UpdateWindows() SendError!usize {
+pub fn x11UpdateWindows() error{WriteFailed}!usize {
     var update_count: usize = 0;
 
     for (&global.static_window_common_states, 0..) |*window, static_window_id_raw| switch (window.*) {
@@ -1039,10 +881,11 @@ pub fn x11UpdateWindows() SendError!usize {
     return update_count;
 }
 
-pub fn pollSocket(sock: std.posix.socket_t, timeout_ms: i32) !enum { ready, timeout } {
+fn pollSocketReader(socket_reader: *x11.SocketReader, timeout_ms: i32) !enum { ready, timeout } {
+    if (socket_reader.interface().bufferedLen() > 0) return .ready;
     var poll_fds = [_]std.posix.pollfd{
         .{
-            .fd = sock,
+            .fd = socket_reader.getStream().handle,
             .events = std.posix.POLL.IN,
             .revents = 0,
         },
@@ -1106,31 +949,23 @@ fn getTimerMinTimeout(maybe_now_ref: *?std.time.Instant) Timeout {
 }
 
 pub fn mainLoop() !void {
-    const double_buf = try x11.DoubleBuffer.init(
-        std.mem.alignForward(usize, 1000, std.heap.pageSize()),
-        .{ .memfd_name = "ZigX11DoubleBuffer" },
-    );
-    // double_buf.deinit() (not necessary)
-    log.info("read buffer capacity is {}", .{double_buf.half_len});
-    var buf = double_buf.contiguousReadBuffer();
-
     while (true) {
-        // we prioritize socket messagse over timeout, so we only start checking the
+        // we prioritize socket messages over timeout, so we only start checking the
         // timeout if the socket has no messages
         while (true) {
             _ = try x11UpdateWindows();
-
-            switch (try pollSocket(global.connection.sock, 0)) {
+            try global.conn.?.sink.writer.flush();
+            switch (try pollSocketReader(&global.io.socket_reader, 0)) {
                 .ready => break,
                 .timeout => {},
             }
             var maybe_now: ?std.time.Instant = null;
             const expired = blk_expired: switch (getTimerMinTimeout(&maybe_now)) {
                 .none => {
-                    std.debug.assert(.ready == try pollSocket(global.connection.sock, -1));
+                    std.debug.assert(.ready == try pollSocketReader(&global.io.socket_reader, -1));
                     break;
                 },
-                .ms => |ms| switch (try pollSocket(global.connection.sock, ms)) {
+                .ms => |ms| switch (try pollSocketReader(&global.io.socket_reader, ms)) {
                     .ready => break,
                     .timeout => {
                         var new_now: ?std.time.Instant = null;
@@ -1155,52 +990,43 @@ pub fn mainLoop() !void {
             }
         }
 
-        {
-            const recv_buf = buf.nextReadBuffer();
-            if (recv_buf.len == 0) {
-                std.debug.panic("buffer size {} not big enough! (todo: probably just increase it?)", .{buf.half_len});
-            }
-
-            // TODO: read the socket with a timeout
-            const len = try x11.readSock(global.connection.sock, recv_buf, 0);
-
-            if (len == 0) {
-                log.info("X server connection closed", .{});
+        const msg_kind = global.conn.?.source.readKind() catch |err| return switch (err) {
+            error.EndOfStream => {
+                log.info("X11 connection closed (EndOfStream)", .{});
                 return;
-            }
-            buf.reserve(len);
-        }
-        while (true) {
-            const data = buf.nextReservedBuffer();
-            if (data.len < 32)
-                break;
-            const msg_len = x11.parseMsgLen(data[0..32].*);
-            if (data.len < msg_len)
-                break;
-            buf.release(msg_len);
-            //buf.resetIfEmpty();
-            try x11HandleMessage(@alignCast(data));
-        }
+            },
+            else => |e| switch (global.io.socket_reader.getError() orelse e) {
+                error.ConnectionResetByPeer => {
+                    log.info("X11 connection closed (ConnectionReset)", .{});
+                    return;
+                },
+                else => |e2| e2,
+            },
+        };
+        try x11HandleMessage(&global.conn.?.source, msg_kind);
     }
 }
 pub fn quitMainLoop() void {
-    std.posix.shutdown(global.connection.sock, .both) catch |err| switch (err) {
-        error.BlockingOperationInProgress => unreachable,
-        error.SystemResources,
-        error.NetworkSubsystemFailed,
-        error.Unexpected,
-        => |e| std.debug.panic("shutdown failed with {s}", .{@errorName(e)}),
-        error.ConnectionResetByPeer,
-        error.SocketNotConnected,
-        error.ConnectionAborted,
-        => {},
-    };
+    if (global.conn != null) {
+        std.posix.shutdown(global.io.stream().handle, .both) catch |err| switch (err) {
+            error.BlockingOperationInProgress => unreachable,
+            error.SystemResources,
+            error.NetworkSubsystemFailed,
+            error.Unexpected,
+            => |e| std.debug.panic("shutdown failed with {s}", .{@errorName(e)}),
+            error.ConnectionResetByPeer,
+            error.SocketNotConnected,
+            error.ConnectionAborted,
+            => {},
+        };
+    }
 }
 
-pub fn x11HandleMessage(msg_buf: []align(4) u8) !void {
-    switch (x11.serverMsgTaggedUnion(msg_buf.ptr)) {
-        .err => |msg| {
-            switch (msg.code) {
+pub fn x11HandleMessage(source: *x11.Source, msg_kind: x11.ServerMsgKind) !void {
+    switch (msg_kind) {
+        .Error => {
+            const err = try source.read2(.Error);
+            switch (err.code) {
                 // .drawable => {
                 //     // these errors are expected, if a window is destroyed while we are rendering
                 //     // to it which I think is a non-preventable error.
@@ -1223,59 +1049,60 @@ pub fn x11HandleMessage(msg_buf: []align(4) u8) !void {
                 //     }
                 // },
                 // TODO: handle more errors, errors should be recoverable
-                else => std.debug.panic("Unhandled X11 error: {}", .{msg}),
+                else => std.debug.panic("Unhandled X11 Error: {f}", .{err}),
             }
         },
-        .reply => |msg| {
-            switch (try global.connection.dbe.onReply(msg)) {
-                .not_handled => {},
-                .newly_unsupported, .newly_supported => {
-                    // TODO: finish mapping any pending windows?
-                    return;
-                },
-            }
-            log.info("todo: handle a reply message {}", .{msg});
+        .Reply => {
+            const reply = try source.read2(.Reply);
+            const remaining = source.replyRemainingSize();
+            try global.conn.?.dbe.onReply(source, reply);
+            if (source.replyRemainingSize() != remaining) return;
+            log.info("todo: handle a reply message {f}", .{source.readFmt()});
+            try source.discardRemaining();
             return error.TodoHandleReplyMessage;
         },
-        .key_press => |msg| {
-            if (global.connection.staticWindowFromX11Id(msg.event)) |w| switch (w) {
+        .KeyPress => {
+            const event = try source.read2(.KeyPress);
+            if (global.conn.?.staticWindowFromX11Id(event.event)) |w| switch (w) {
                 inline else => |window_id| {
                     const config = zin.WindowConfig{ .static = window_id };
                     if (config.data().key_events) {
-                        if (global.connection.keymap.getKeysym(msg.keycode, msg.state.mod())) |keysym| {
-                            staticCallback(window_id)(.{ .key = keyFromX11(.down, msg.keycode, msg.state, keysym) });
+                        if (global.conn.?.keymap.getKeysym(event.keycode, event.state.mod())) |keysym| {
+                            staticCallback(window_id)(.{ .key = keyFromX11(.down, event.keycode, event.state, keysym) });
                         } else |err| switch (err) {
                             error.KeycodeTooSmall => {
-                                log.err("KeyPress keycode {} is too small", .{msg.keycode});
+                                log.err("KeyPress keycode {} is too small", .{event.keycode});
                             },
                         }
                     }
                 },
             } else @panic("todo: motion_notify on dynamic windows");
         },
-        .key_release => |msg| {
-            if (global.connection.staticWindowFromX11Id(msg.event)) |w| switch (w) {
+        .KeyRelease => {
+            const event = try source.read2(.KeyRelease);
+            if (global.conn.?.staticWindowFromX11Id(event.event)) |w| switch (w) {
                 inline else => |window_id| {
                     const config = zin.WindowConfig{ .static = window_id };
                     if (config.data().key_events) {
-                        if (global.connection.keymap.getKeysym(msg.keycode, msg.state.mod())) |keysym| {
-                            staticCallback(window_id)(.{ .key = keyFromX11(.up, msg.keycode, msg.state, keysym) });
+                        if (global.conn.?.keymap.getKeysym(event.keycode, event.state.mod())) |keysym| {
+                            staticCallback(window_id)(.{ .key = keyFromX11(.up, event.keycode, event.state, keysym) });
                         } else |err| switch (err) {
                             error.KeycodeTooSmall => {
-                                log.err("KeyRelease keycode {} is too small", .{msg.keycode});
+                                log.err("KeyRelease keycode {} is too small", .{event.keycode});
                             },
                         }
                     }
                 },
             } else @panic("todo: motion_notify on dynamic windows");
         },
-        .button_press => |msg| {
-            const button_id = mouseButtonFromMsg(msg.detail);
+        .ButtonPress => {
+            const event = try source.read2(.ButtonPress);
+            const button_id = mouseButtonFromMsg(event.button);
             const pos: zin.XY = .{
-                .x = @intCast(msg.event_x),
-                .y = @intCast(msg.event_y),
+                .x = @intCast(event.event_x),
+                .y = @intCast(event.event_y),
             };
-            if (global.connection.staticWindowFromX11Id(msg.event)) |w| switch (w) {
+            if (global.conn.?.staticWindowFromX11Id(event.event)) |w| switch (w) {
                 inline else => |window_id| {
                     const config = zin.WindowConfig{ .static = window_id };
                     if (config.data().mouse_events) {
@@ -1287,13 +1114,14 @@ pub fn x11HandleMessage(msg_buf: []align(4) u8) !void {
                 },
             } else @panic("todo: button_press on dynamic windows");
         },
-        .button_release => |msg| {
-            const button_id = mouseButtonFromMsg(msg.detail);
+        .ButtonRelease => {
+            const event = try source.read2(.ButtonRelease);
+            const button_id = mouseButtonFromMsg(event.button);
             const pos: zin.XY = .{
-                .x = @intCast(msg.event_x),
-                .y = @intCast(msg.event_y),
+                .x = @intCast(event.event_x),
+                .y = @intCast(event.event_y),
             };
-            if (global.connection.staticWindowFromX11Id(msg.event)) |w| switch (w) {
+            if (global.conn.?.staticWindowFromX11Id(event.event)) |w| switch (w) {
                 inline else => |window_id| {
                     const config = zin.WindowConfig{ .static = window_id };
                     if (config.data().mouse_events) {
@@ -1305,18 +1133,19 @@ pub fn x11HandleMessage(msg_buf: []align(4) u8) !void {
                 },
             } else @panic("todo: button_release on dynamic windows");
         },
-        .enter_notify => |msg| {
-            log.info("enter_window: {}", .{msg});
-        },
-        .leave_notify => |msg| {
-            log.info("leave_window: {}", .{msg});
-        },
-        .motion_notify => |msg| {
+        // .enter_notify => |msg| {
+        //     log.info("enter_window: {}", .{msg});
+        // },
+        // .leave_notify => |msg| {
+        //     log.info("leave_window: {}", .{msg});
+        // },
+        .MotionNotify => {
+            const event = try source.read2(.MotionNotify);
             const pos: zin.XY = .{
-                .x = @intCast(msg.event_x),
-                .y = @intCast(msg.event_y),
+                .x = @intCast(event.event_x),
+                .y = @intCast(event.event_y),
             };
-            if (global.connection.staticWindowFromX11Id(msg.event)) |w| switch (w) {
+            if (global.conn.?.staticWindowFromX11Id(event.event)) |w| switch (w) {
                 inline else => |window_id| {
                     const config = zin.WindowConfig{ .static = window_id };
                     if (config.data().mouse_events) {
@@ -1325,38 +1154,38 @@ pub fn x11HandleMessage(msg_buf: []align(4) u8) !void {
                 },
             } else @panic("todo: motion_notify on dynamic windows");
         },
-        .keymap_notify => |msg| {
-            log.info("keymap_state: {}", .{msg});
-        },
-        .expose => |msg| {
-            if (global.connection.staticWindowFromX11Id(msg.window)) |w| switch (w) {
+        .Expose => {
+            const expose = try source.read2(.Expose);
+            if (global.conn.?.staticWindowFromX11Id(expose.window)) |w| switch (w) {
                 inline else => |window_id| switch (try drawStaticWindow(window_id)) {
                     .not_created => {}, // ok means we destroyed this window
                     .success => {},
                 },
             } else @panic("todo: expose on dynamic windows");
         },
-        .mapping_notify => |msg| {
-            log.info("mapping_notify: {}", .{msg});
+
+        // messages we ignoring but still logging
+        .MappingNotify,
+        .UnmapNotify,
+        .MapNotify,
+        .ReparentNotify,
+        => {
+            log.debug("ignoring X11 {f}", .{source.readFmt()});
+            // ensures we still discard the rest of the message if logging is disabled
+            try source.discardRemaining();
         },
-        .no_exposure => |msg| std.debug.panic("unexpected no_exposure {}", .{msg}),
-        .unhandled => |msg| {
-            log.info("todo: server msg {}", .{msg});
-            return error.UnhandledServerMsg;
-        },
-        .destroy_notify => |msg| {
-            if (global.connection.staticWindowFromX11Id(msg.window)) |window_id| {
+        .DestroyNotify => {
+            const msg = try source.read2(.DestroyNotify);
+            if (global.conn.?.staticWindowFromX11Id(msg.window)) |window_id| {
                 switch (global.static_window_common_states[@intFromEnum(window_id)]) {
                     .not_created => {}, // ok, means the user must have closed the window
                     .created => @panic("todo: notify app that a window was destroyed"),
                 }
             } else @panic("todo: expose on dynamic windows");
         },
-        .unmap_notify => {}, // ignore for now
-        .map_notify => {}, // ignore for now
-        .reparent_notify => {}, // ignore
-        .configure_notify => |msg| {
-            if (global.connection.staticWindowFromX11Id(msg.window)) |w| switch (w) {
+        .ConfigureNotify => {
+            const msg = try source.read2(.ConfigureNotify);
+            if (global.conn.?.staticWindowFromX11Id(msg.window)) |w| switch (w) {
                 inline else => |window_id| {
                     std.debug.assert(window_id.getConfig().window_size_events);
                     const current_size = global.staticWindowCustomState(window_id).client_size;
@@ -1367,7 +1196,12 @@ pub fn x11HandleMessage(msg_buf: []align(4) u8) !void {
                 },
             } else @panic("todo: configure_notify on dynamic windows");
         },
-        .generic_extension_event => |msg| std.debug.panic("unexpected generic_extension_event {}", .{msg}),
+        // .generic_extension_event => |msg| std.debug.panic("unexpected generic_extension_event {}", .{msg}),
+        else => {
+            log.err("Unexpected X11 {f}", .{source.readFmt()});
+            try source.discardRemaining();
+            return error.X11UnexpectedMessage;
+        },
     }
 }
 
@@ -1391,7 +1225,6 @@ fn giveup(what: []const u8, e: anyerror) noreturn {
 
 pub fn Draw(window_config: zin.WindowConfig) type {
     return struct {
-        error_ref: *?SendError,
         window: x11.Window,
         use_back_buffer: switch (window_config.data().x11.render_kind) {
             .immediate => void,
@@ -1399,8 +1232,6 @@ pub fn Draw(window_config: zin.WindowConfig) type {
         },
         client_size: if (window_config.data().window_size_events) zin.XY else void,
         background: if (window_config.data().dynamic_background) zin.Rgb8 else void,
-        // gc_background: Rgb,
-        // gc_foreground: Rgb,
 
         const Self = @This();
 
@@ -1416,93 +1247,70 @@ pub fn Draw(window_config: zin.WindowConfig) type {
 
         pub fn getDpiScale(self: *const Self) struct { x: f32, y: f32 } {
             _ = self;
-            return .{ .x = global.connection.dpi_scale_x, .y = global.connection.dpi_scale_y };
+            return .{ .x = global.conn.?.dpi_scale_x, .y = global.conn.?.dpi_scale_y };
         }
 
         pub fn clear(self: *const Self) void {
-            if (self.error_ref.* != null) return;
-
+            if (global.conn.?.write_error != null) return;
             switch (window_config.data().x11.render_kind) {
                 .immediate => {},
                 .double_buffered => if (self.use_back_buffer) return,
             }
-
             const rgb = if (comptime window_config.data().dynamic_background)
                 self.background
             else
                 window_config.data().background;
-            var messages: [x11.change_gc.max_len + x11.clear_area.len]u8 = undefined;
-            const after_change_gc: usize = x11.change_gc.serialize(&messages, gcFromWindow(self.window), .{
-                .background = x11FromRgb(rgb),
-            });
+            global.conn.?.sink.ChangeGc(gcFromWindow(self.window), .{
+                .background = global.conn.?.x11FromRgb(rgb),
+            }) catch |e| return global.conn.?.setWriteError(e);
             // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
             // TODO: get the actual width/height
-            x11.clear_area.serialize(messages[after_change_gc..].ptr, false, self.window, .{
+            global.conn.?.sink.ClearArea(self.window, .{
                 .x = 0,
                 .y = 0,
                 .width = @intCast(self.client_size.x),
                 .height = @intCast(self.client_size.y),
-            });
-            const total_len: usize = after_change_gc + x11.clear_area.len;
-            global.connection.sendMultiple(2, messages[0..total_len]) catch |e| giveup("send change-gc/clear", e);
+            }, .{ .exposures = false }) catch |e| return global.conn.?.setWriteError(e);
         }
 
         pub fn rect(self: *const Self, r: zin.Rect, rgb: zin.Rgb8) void {
-            if (self.error_ref.* != null) return;
-
-            var messages: [x11.change_gc.max_len + x11.poly_fill_rectangle.getLen(1)]u8 = undefined;
-            const after_change_gc: usize = x11.change_gc.serialize(&messages, gcFromWindow(self.window), .{
-                .foreground = x11FromRgb(rgb),
-            });
-            x11.poly_fill_rectangle.serialize(messages[after_change_gc..].ptr, .{
-                .drawable_id = self.x11Drawable(),
-                .gc_id = gcFromWindow(self.window),
-            }, &[_]x11.Rectangle{
-                .{
+            if (global.conn.?.write_error != null) return;
+            global.conn.?.sink.ChangeGc(gcFromWindow(self.window), .{
+                .foreground = global.conn.?.x11FromRgb(rgb),
+            }) catch |e| global.conn.?.setWriteError(e);
+            global.conn.?.sink.PolyFillRectangle(
+                self.x11Drawable(),
+                gcFromWindow(self.window),
+                .initAssume(&[_]x11.Rectangle{.{
                     .x = @intCast(r.left),
                     .y = @intCast(r.top),
                     .width = @intCast(r.right - r.left),
                     .height = @intCast(r.bottom - r.top),
-                },
-            });
-            const total_len: usize = after_change_gc + x11.poly_fill_rectangle.getLen(1);
-            global.connection.sendMultiple(2, messages[0..total_len]) catch |e| giveup("send change-gc/fill-rect", e);
+                }}),
+            ) catch |e| global.conn.?.setWriteError(e);
         }
 
         pub fn text(self: *const Self, t: []const u8, x: i32, y: i32, rgb: zin.Rgb8) void {
-            if (self.error_ref.* != null) return;
-
+            if (global.conn.?.write_error != null) return;
             const slice = x11.SliceWithMaxLen(u8, [*]const u8, 254){
                 .ptr = t.ptr,
                 .len = std.math.cast(u8, t.len) orelse std.debug.panic("TODO: handle text with {} bytes", .{t.len}),
             };
-            const poly_text8_max_one_item = comptime x11.poly_text8.getLen(&[_]x11.TextItem8{
-                .{ .text_element = .{ .delta = 0, .string = .undefined_max_len } },
-            });
-
-            var messages: [x11.change_gc.max_len + poly_text8_max_one_item]u8 = undefined;
-            const after_change_gc: usize = x11.change_gc.serialize(&messages, gcFromWindow(self.window), .{
-                .background = 0, // TODO: how do we declare this as transparent
-                .foreground = x11FromRgb(rgb),
-            });
-            const items = [_]x11.TextItem8{
-                .{ .text_element = .{ .delta = 0, .string = slice } },
-            };
-            x11.poly_text8.serialize(messages[after_change_gc..].ptr, &items, .{
-                .drawable_id = self.x11Drawable(),
-                .gc_id = gcFromWindow(self.window),
-                .x = std.math.cast(i16, x) orelse std.debug.panic("TODO: what to do with x value of {}", .{x}),
-                .y = std.math.cast(i16, y) orelse std.debug.panic("TODO: what to do with y value of {}", .{y}),
-            });
-            const total_len: usize = after_change_gc + x11.poly_text8.getLen(&items);
-            global.connection.sendMultiple(2, messages[0..total_len]) catch |e| {
-                self.error_ref.* = e;
-                return;
-            };
+            global.conn.?.sink.ChangeGc(gcFromWindow(self.window), .{
+                .background = 0, // TODO: how do we declare this as transparent?
+                .foreground = global.conn.?.x11FromRgb(rgb),
+            }) catch |e| global.conn.?.setWriteError(e);
+            global.conn.?.sink.PolyText8(
+                self.x11Drawable(),
+                gcFromWindow(self.window),
+                .{
+                    .x = std.math.cast(i16, x) orelse std.debug.panic("TODO: what to do with x value of {}", .{x}),
+                    .y = std.math.cast(i16, y) orelse std.debug.panic("TODO: what to do with y value of {}", .{y}),
+                },
+                &[_]x11.TextItem8{
+                    .{ .text_element = .{ .delta = 0, .string = slice } },
+                },
+            ) catch |e| global.conn.?.setWriteError(e);
         }
     };
-}
-
-fn x11FromRgb(rgb: zin.Rgb8) u32 {
-    return (@as(u32, rgb.r) << 16) | (@as(u32, rgb.g) << 8) | (@as(u32, rgb.b) << 0);
 }

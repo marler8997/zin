@@ -11,7 +11,8 @@ const log = std.log.scoped(.macos);
 
 extern "c" fn NSApplicationLoad() c_char;
 
-pub fn loadAppKit() error{NSApplicationLoadFailed}!void {
+pub fn processInit(opt: zin.ProcessInitOptions) zin.ProcessInitError!void {
+    _ = opt;
     if (0 == NSApplicationLoad()) return error.NSApplicationLoadFailed;
 }
 
