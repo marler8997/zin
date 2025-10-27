@@ -258,7 +258,7 @@ pub fn connect(out_err: *ConnectError) error{X11Connect}!void {
     std.debug.assert(global.process_init_called);
     std.debug.assert(global.conn == null);
     global.io = x11.connect(
-        global.address,
+        &global.address,
         &global.write_buffer,
         &global.read_buffer,
     ) catch |err| {
