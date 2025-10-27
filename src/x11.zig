@@ -272,8 +272,8 @@ pub fn connect(out_err: *ConnectError) error{X11Connect}!void {
     log.info("connected to {f}", .{global.address});
     x11.draft.authenticate(
         global.display,
-        global.parsed_display,
-        global.address,
+        &global.parsed_display,
+        &global.address,
         &global.io,
     ) catch |err| switch (err) {
         error.X11Authentication => return out_err.set(.cant_authenticate),
