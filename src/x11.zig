@@ -538,19 +538,19 @@ const Timer = struct {
 /// This should only be called while connected (after a successfull call to connect).
 pub fn x11Socket() std.posix.socket_t {
     std.debug.assert(global.conn != null);
-    return global.io.stream().handle;
+    return global.i.socket_reader.getStream().handle;
 }
 /// Access the global socket writer.
 /// This should only be called while connected (after a successfull call to connect).
 pub fn x11SocketWriter() *x11.SocketWriter {
     std.debug.assert(global.conn != null);
-    return &global.io.socket_writer;
+    return &global.i.socket_writer;
 }
 /// Access the global socket reader.
 /// This should only be called while connected (after a successfull call to connect).
 pub fn x11SocketReader() *x11.SocketReader {
     std.debug.assert(global.conn != null);
-    return &global.io.socket_reader;
+    return &global.i.socket_reader;
 }
 /// Access the global x11 Source.
 /// This should only be called while connected (after a successfull call to connect).
