@@ -409,9 +409,9 @@ pub const min_timer_id_int = 0;
 
 pub const global = struct {
     var process_init_called: bool = false;
-    var display: x11.Display = undefined;
-    var parsed_display: x11.ParsedDisplay = undefined;
-    var address: x11.Address = undefined;
+    pub var display: x11.Display = undefined;
+    pub var parsed_display: x11.ParsedDisplay = undefined;
+    pub var address: x11.Address = undefined;
 
     var write_buffer: [zin.config.x11_write_buffer_size]u8 = undefined;
     var read_buffer: [zin.config.x11_read_buffer_size]u8 = undefined;
@@ -517,9 +517,29 @@ const Timer = struct {
     duration_ms: u64,
 };
 
-/// Access the global x11 socket, this should only be called after a successful call to connect.
+/// Access the global x11 socket.
+/// This should only be called while connected (after a successfull call to connect).
 pub fn x11Socket() std.posix.socket_t {
-    return global.connection.sock;
+    std.debug.assert(global.conn != null);
+    return global.io.stream().handle;
+}
+/// Access the global socket writer.
+/// This should only be called while connected (after a successfull call to connect).
+pub fn x11SocketWriter() *x11.SocketWriter {
+    std.debug.assert(global.conn != null);
+    return &global.io.socket_writer;
+}
+/// Access the global socket reader.
+/// This should only be called while connected (after a successfull call to connect).
+pub fn x11SocketReader() *x11.SocketReader {
+    std.debug.assert(global.conn != null);
+    return &global.io.socket_reader;
+}
+/// Access the global x11 Source.
+/// This should only be called while connected (after a successfull call to connect).
+pub fn x11Source() *x11.Source {
+    std.debug.assert(global.conn != null);
+    return &global.conn.?.source;
 }
 
 fn staticCallback(comptime window_id: zin.StaticWindowId) *const fn (zin.Callback(.{ .static = window_id })) void {
