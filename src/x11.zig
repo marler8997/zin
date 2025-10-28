@@ -110,8 +110,6 @@ const Extension = struct {
 pub const Connection = struct {
     sink: x11.RequestSink,
     source: x11.Source,
-    setup: x11.Setup,
-    screen: x11.ScreenHeader,
     dpi_scale_x: f32,
     dpi_scale_y: f32,
     depth: x11.Depth,
@@ -125,7 +123,7 @@ pub const Connection = struct {
     pub fn setWriteError(conn: *Connection, e: error{WriteFailed}) void {
         std.debug.assert(conn.write_error == null);
         conn.write_error = e;
-        if (global.io.socket_writer.err) |err| {
+        if (global.i.socket_writer.err) |err| {
             log.err("write to X11 socket failed with {s}", .{@errorName(err)});
         } else {
             log.err("write to X11 socket failed with unknown error", .{});
@@ -147,7 +145,8 @@ pub const Connection = struct {
         @panic("todo");
     }
     fn staticWindowFromX11Id(self: *const Connection, window: x11.Window) ?zin.StaticWindowId {
-        const id_offset = @intFromEnum(window) - @intFromEnum(self.setup.resource_id_base);
+        _ = self;
+        const id_offset = @intFromEnum(window) - @intFromEnum(global.i.setup.resource_id_base);
         if (id_offset < static_window_count * fixed_ids_per_window) return @as(zin.StaticWindowId, @enumFromInt(@divTrunc(id_offset, fixed_ids_per_window)));
         return null;
     }
@@ -167,14 +166,15 @@ pub const Connection = struct {
     }
 
     pub fn staticWindowId(self: *const Connection, id: zin.StaticWindowId) x11.Window {
-        return self.setup.resource_id_base.add(@as(u32, @intFromEnum(id)) * fixed_ids_per_window).window();
+        _ = self;
+        return global.i.setup.resource_id_base.add(@as(u32, @intFromEnum(id)) * fixed_ids_per_window).window();
     }
     pub fn staticWindowGc(self: *const Connection, id: zin.StaticWindowId) x11.GraphicsContext {
         return self.setup.fixed().resource_id_base.add(@as(u32, @intFromEnum(id)) * fixed_ids_per_window + 1).graphicsContext();
     }
 
     fn reserveId(self: *Connection) x11.Resource {
-        const resource = self.setup.resource_id_base.add(@intCast(static_window_count * fixed_ids_per_window + self.next_id_offset));
+        const resource = global.i.setup.resource_id_base.add(@intCast(static_window_count * fixed_ids_per_window + self.next_id_offset));
         self.next_id_offset += 1;
         return resource;
     }
@@ -211,7 +211,7 @@ pub fn processInit(opt: zin.ProcessInitOptions) zin.ProcessInitError!void {
         log.err("invalid X11 DISPLAY {f}: {s}", .{ global.display, @errorName(err) });
         return error.X11BadDisplay;
     };
-    global.address = x11.getAddress(global.display, &global.parsed_display) catch |err| switch (err) {
+    global.host = x11.getHost(global.display, &global.parsed_display) catch |err| switch (err) {
         error.X11BadDisplay => |e| {
             log.err("invalid X11 DISPLAY {f}", .{global.display});
             return e;
@@ -257,70 +257,76 @@ pub const ConnectError = union(enum) {
 pub fn connect(out_err: *ConnectError) error{X11Connect}!void {
     std.debug.assert(global.process_init_called);
     std.debug.assert(global.conn == null);
-    global.io = x11.connect(
-        &global.address,
-        &global.write_buffer,
-        &global.read_buffer,
-    ) catch |err| {
-        return out_err.set(.{ .connect_error = err });
-    };
     errdefer {
-        global.io.shutdown();
-        std.posix.close(global.io.stream().handle);
-        global.io = undefined;
+        std.debug.assert(global.conn == null);
+        global.i.socket_writer = undefined;
+        global.i.screen = undefined;
+        global.i.setup = undefined;
+        global.i.socket_reader = undefined;
     }
-    log.info("connected to {f}", .{global.address});
-    x11.draft.authenticate(
-        global.display,
-        &global.parsed_display,
-        &global.address,
-        &global.io,
-    ) catch |err| switch (err) {
-        error.X11Authentication => return out_err.set(.cant_authenticate),
+
+    global.i.socket_reader, global.use_auth = blk: {
+        const address, const initial_stream = x11.connect(&global.host) catch |err| {
+            return out_err.set(.{ .connect_error = err });
+        };
+        errdefer x11.disconnect(initial_stream);
+        if (zig_atleast_15)
+            log.info("connected to {f}", .{address})
+        else
+            log.info("connected to {}", .{address});
+        break :blk x11.draft.authenticate(
+            global.display,
+            &global.parsed_display,
+            &global.host,
+            &address,
+            initial_stream,
+            &global.read_buffer,
+            .{ .order = if (global.use_auth) .auth_first else .no_auth_first },
+        ) catch |err| switch (err) {
+            error.X11Authentication => return out_err.set(.cant_authenticate),
+        };
     };
-    var sink: x11.RequestSink = .{ .writer = &global.io.socket_writer.interface };
-    var source: x11.Source = .{ .reader = global.io.socket_reader.interface() };
-    const setup = source.readSetup() catch |err| switch (err) {
+    errdefer x11.disconnect(global.i.socket_reader.getStream());
+
+    global.i.setup = x11.readSetupSuccess(global.i.socket_reader.interface()) catch |err| switch (err) {
         error.ReadFailed => return out_err.set(.{
-            .recv_error = global.io.socket_reader.getError() orelse error.Unexpected,
+            .recv_error = global.i.socket_reader.getError() orelse error.Unexpected,
         }),
         error.EndOfStream => return out_err.set(.{ .recv_error = error.EndOfStream }),
         error.X11Protocol => return out_err.set(.{ .protocol_error = .setup }),
     };
-    std.log.info("setup reply {f}", .{setup});
-    const screen = (x11.draft.readSetupDynamic(&source, &setup, .{}) catch |err| switch (err) {
+    std.log.info("setup reply {f}", .{global.i.setup});
+    var source: x11.Source = .initFinishSetup(global.i.socket_reader.interface(), &global.i.setup);
+    global.i.screen = (x11.draft.readSetupDynamic(&source, &global.i.setup, .{}) catch |err| switch (err) {
         error.ReadFailed => return out_err.set(.{
-            .recv_error = global.io.socket_reader.getError() orelse error.Unexpected,
+            .recv_error = global.i.socket_reader.getError() orelse error.Unexpected,
         }),
         error.EndOfStream => return out_err.set(.{ .recv_error = error.EndOfStream }),
         error.X11Protocol => return out_err.set(.{ .protocol_error = .setup_dynamic }),
     }) orelse return out_err.set(.no_screen);
+    global.i.socket_writer = x11.socketWriter(global.i.socket_reader.getStream(), &global.write_buffer);
+    var sink: x11.RequestSink = .{ .writer = &global.i.socket_writer.interface };
 
-    const dpi_scale_x = dpiScaleFromPixelMm(screen.pixel_width, screen.mm_width);
-    const dpi_scale_y = dpiScaleFromPixelMm(screen.pixel_height, screen.mm_height);
+    const dpi_scale_x = dpiScaleFromPixelMm(global.i.screen.pixel_width, global.i.screen.mm_width);
+    const dpi_scale_y = dpiScaleFromPixelMm(global.i.screen.pixel_height, global.i.screen.mm_height);
     log.debug("DPI {d:.2}x{d:.2}", .{ dpi_scale_x, dpi_scale_y });
-    const depth = x11.Depth.init(screen.root_depth) orelse {
-        log.err("unsupported screen depth {}", .{screen.root_depth});
+    const depth = x11.Depth.init(global.i.screen.root_depth) orelse {
+        log.err("unsupported screen depth {}", .{global.i.screen.root_depth});
         return out_err.set(.{ .protocol_error = .depth });
     };
 
     const keymap: if (support_key_events) x11.keymap.Full else void = blk: {
         if (!support_key_events) break :blk {};
-
-        const keycode_range = x11.KeycodeRange.init(
-            setup.min_keycode,
-            setup.max_keycode,
+        const keyrange = x11.KeycodeRange.init(
+            global.i.setup.min_keycode,
+            global.i.setup.max_keycode,
         ) catch return out_err.set(.{ .protocol_error = .keycode_range });
         // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
         // TODO: should the initSynchronous function take the keymap by reference instead
-        break :blk x11.keymap.Full.initSynchronous(
-            &sink,
-            &source,
-            keycode_range,
-        ) catch |err| return switch (err) {
-            error.WriteFailed => return out_err.set(.{ .send_error = global.io.socket_writer.err orelse error.Unexpected }),
+        break :blk x11.keymap.Full.initSynchronous(&sink, &source, keyrange) catch |err| return switch (err) {
+            error.WriteFailed => return out_err.set(.{ .send_error = global.i.socket_writer.err orelse error.Unexpected }),
             error.ReadFailed => return out_err.set(.{
-                .recv_error = global.io.socket_reader.getError() orelse error.Unexpected,
+                .recv_error = global.i.socket_reader.getError() orelse error.Unexpected,
             }),
             error.EndOfStream => return out_err.set(.{ .recv_error = error.EndOfStream }),
             error.X11Protocol => return out_err.set(.{ .protocol_error = .setup_dynamic }),
@@ -330,8 +336,6 @@ pub fn connect(out_err: *ConnectError) error{X11Connect}!void {
     global.conn = .{
         .sink = sink,
         .source = source,
-        .setup = setup,
-        .screen = screen,
         .dpi_scale_x = dpi_scale_x,
         .dpi_scale_y = dpi_scale_y,
         .depth = depth,
@@ -341,10 +345,15 @@ pub fn connect(out_err: *ConnectError) error{X11Connect}!void {
 }
 pub fn disconnect() void {
     std.debug.assert(global.conn != null);
+    global.conn.? = undefined;
     global.conn = null;
-    global.io.shutdown();
-    std.posix.close(global.io.stream().handle);
-    global.io = undefined;
+
+    x11.disconnect(global.i.socket_reader.getStream());
+
+    global.i.socket_writer = undefined;
+    global.i.screen = undefined;
+    global.i.setup = undefined;
+    global.i.socket_reader = undefined;
 }
 
 fn dpiScaleFromPixelMm(pixels: u16, millimeters: u16) f32 {
@@ -411,13 +420,21 @@ pub const global = struct {
     var process_init_called: bool = false;
     pub var display: x11.Display = undefined;
     pub var parsed_display: x11.ParsedDisplay = undefined;
-    pub var address: x11.Address = undefined;
+    pub var host: x11.Host = undefined;
 
+    var use_auth: bool = true;
     var write_buffer: [zin.config.x11_write_buffer_size]u8 = undefined;
     var read_buffer: [zin.config.x11_read_buffer_size]u8 = undefined;
-    // guaranteed to be initialized while conn is not null
-    var io: x11.Io = undefined;
+
     pub var conn: ?Connection = null;
+    // all decls in the i namespace are guaranteed to be initialized while conn
+    // is not null (after a successfull call to connect).
+    pub const i = struct {
+        pub var socket_reader: x11.SocketReader = undefined;
+        pub var setup: x11.Setup = undefined;
+        pub var screen: x11.ScreenHeader = undefined;
+        pub var socket_writer: x11.SocketWriter = undefined;
+    };
 
     var static_callbacks: [static_window_count]?*const anyopaque = @splat(null);
     var static_window_common_states: [static_window_count]StaticWindowCommonState = @splat(.not_created);
@@ -685,7 +702,7 @@ fn createWindow(
     if (global.conn.?.write_error) |e| return e;
     global.conn.?.sink.CreateWindow(.{
         .window_id = id,
-        .parent_window_id = global.conn.?.screen.root,
+        .parent_window_id = global.i.screen.root,
         .depth = 0, // we don't care, just inherit from the parent
         .x = 0,
         .y = 0,
@@ -693,7 +710,7 @@ fn createWindow(
         .height = @intCast(size.y),
         .border_width = 0, // TODO: what is this?
         .class = .input_output,
-        .visual_id = global.conn.?.screen.root_visual,
+        .visual_id = global.i.screen.root_visual,
     }, .{
         // .bg_pixmap = .copy_from_parent,
         .bg_pixel = bg,
@@ -975,17 +992,17 @@ pub fn mainLoop() !void {
         while (true) {
             _ = try x11UpdateWindows();
             try global.conn.?.sink.writer.flush();
-            switch (try pollSocketReader(&global.io.socket_reader, 0)) {
+            switch (try pollSocketReader(&global.i.socket_reader, 0)) {
                 .ready => break,
                 .timeout => {},
             }
             var maybe_now: ?std.time.Instant = null;
             const expired = blk_expired: switch (getTimerMinTimeout(&maybe_now)) {
                 .none => {
-                    std.debug.assert(.ready == try pollSocketReader(&global.io.socket_reader, -1));
+                    std.debug.assert(.ready == try pollSocketReader(&global.i.socket_reader, -1));
                     break;
                 },
-                .ms => |ms| switch (try pollSocketReader(&global.io.socket_reader, ms)) {
+                .ms => |ms| switch (try pollSocketReader(&global.i.socket_reader, ms)) {
                     .ready => break,
                     .timeout => {
                         var new_now: ?std.time.Instant = null;
@@ -1015,7 +1032,7 @@ pub fn mainLoop() !void {
                 log.info("X11 connection closed (EndOfStream)", .{});
                 return;
             },
-            else => |e| switch (global.io.socket_reader.getError() orelse e) {
+            else => |e| switch (global.i.socket_reader.getError() orelse e) {
                 error.ConnectionResetByPeer => {
                     log.info("X11 connection closed (ConnectionReset)", .{});
                     return;
@@ -1028,7 +1045,7 @@ pub fn mainLoop() !void {
 }
 pub fn quitMainLoop() void {
     if (global.conn != null) {
-        std.posix.shutdown(global.io.stream().handle, .both) catch |err| switch (err) {
+        std.posix.shutdown(global.i.socket_reader.getStream().handle, .both) catch |err| switch (err) {
             error.BlockingOperationInProgress => unreachable,
             error.SystemResources,
             error.NetworkSubsystemFailed,
