@@ -1314,7 +1314,7 @@ pub fn Draw(window_config: zin.WindowConfig) type {
             if (global.conn.?.write_error != null) return;
             global.conn.?.sink.ChangeGc(gcFromWindow(self.window), .{
                 .foreground = global.conn.?.x11FromRgb(rgb),
-            }) catch |e| global.conn.?.setWriteError(e);
+            }) catch |e| return global.conn.?.setWriteError(e);
             global.conn.?.sink.PolyFillRectangle(
                 self.x11Drawable(),
                 gcFromWindow(self.window),
@@ -1324,7 +1324,7 @@ pub fn Draw(window_config: zin.WindowConfig) type {
                     .width = @intCast(r.right - r.left),
                     .height = @intCast(r.bottom - r.top),
                 }}),
-            ) catch |e| global.conn.?.setWriteError(e);
+            ) catch |e| return global.conn.?.setWriteError(e);
         }
 
         pub fn text(self: *const Self, t: []const u8, x: i32, y: i32, rgb: zin.Rgb8) void {
@@ -1336,7 +1336,7 @@ pub fn Draw(window_config: zin.WindowConfig) type {
             global.conn.?.sink.ChangeGc(gcFromWindow(self.window), .{
                 .background = 0, // TODO: how do we declare this as transparent?
                 .foreground = global.conn.?.x11FromRgb(rgb),
-            }) catch |e| global.conn.?.setWriteError(e);
+            }) catch |e| return global.conn.?.setWriteError(e);
             global.conn.?.sink.PolyText8(
                 self.x11Drawable(),
                 gcFromWindow(self.window),
@@ -1347,7 +1347,7 @@ pub fn Draw(window_config: zin.WindowConfig) type {
                 &[_]x11.TextItem8{
                     .{ .text_element = .{ .delta = 0, .string = slice } },
                 },
-            ) catch |e| global.conn.?.setWriteError(e);
+            ) catch |e| return global.conn.?.setWriteError(e);
         }
     };
 }
