@@ -101,7 +101,7 @@ fn callback(cb: zin.Callback(.{ .static = .main })) void {
             const dpi_scale = d.getDpiScale();
 
             // currenly only supported on windows
-            if (zin.platform_kind == .win32) {
+            if (zin.platform_kind == .win32 or zin.platform_kind == .x11) {
                 var pentagon = [5]zin.PolygonPoint{
                     .xy(zin.scale(i32, 200, dpi_scale.x), zin.scale(i32, 127, dpi_scale.y)), // top
                     .xy(zin.scale(i32, 232, dpi_scale.x), zin.scale(i32, 150, dpi_scale.y)), // top right

@@ -1260,6 +1260,13 @@ fn giveup(what: []const u8, e: anyerror) noreturn {
     std.debug.panic("{s} failed with {s}", .{ what, @errorName(e) });
 }
 
+pub const PolygonPoint = struct {
+    x_point: x11.XY(i16),
+    pub fn xy(x: i32, y: i32) PolygonPoint {
+        return .{ .x_point = .{ .x = @truncate(x), .y = @truncate(y) } };
+    }
+};
+
 pub fn Draw(window_config: zin.WindowConfig) type {
     return struct {
         window: x11.Window,
@@ -1348,6 +1355,27 @@ pub fn Draw(window_config: zin.WindowConfig) type {
                     .{ .text_element = .{ .delta = 0, .string = slice } },
                 },
             ) catch |e| return global.conn.?.setWriteError(e);
+        }
+
+        pub fn polygon(self: *const Self, points: []const PolygonPoint, rgb: zin.Rgb8) void {
+            if (global.conn.?.write_error != null) return;
+            if (points.len <= 1) return;
+            global.conn.?.sink.ChangeGc(gcFromWindow(self.window), .{
+                .foreground = global.conn.?.x11FromRgb(rgb),
+            }) catch |e| return global.conn.?.setWriteError(e);
+            var point_sink: x11.PolyPointSink = .{
+                .kind = .{ .fill = .non_convex },
+                .coordinate_mode = .origin,
+                .drawable = self.x11Drawable(),
+                .gc = gcFromWindow(self.window),
+            };
+            defer point_sink.endSetMsgSize(global.conn.?.sink.writer);
+            for (points) |p| {
+                point_sink.write(
+                    &global.conn.?.sink,
+                    p.x_point,
+                ) catch |e| return global.conn.?.setWriteError(e);
+            }
         }
     };
 }
