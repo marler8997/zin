@@ -1115,10 +1115,30 @@ pub fn x11HandleMessage(source: *x11.Source, msg_kind: x11.ServerMsgKind) !void 
             const reply = try source.read2(.Reply);
             const remaining = source.replyRemainingSize();
             try global.conn.?.dbe.onReply(source, reply);
-            if (source.replyRemainingSize() != remaining) return;
-            log.info("todo: handle a reply message {f}", .{source.readFmt()});
+            {
+                const new_remaining = source.replyRemainingSize();
+                if (new_remaining != remaining) {
+                    if (new_remaining != 0) {
+                        std.log.err("x11 reply {} was {} bytes longer than expected", .{ reply, remaining - new_remaining });
+                        return error.X11Protocol;
+                    }
+                    return;
+                }
+            }
+
+            if (zin.config.x11_unhandled_reply) |func| {
+                try func(reply.flexible, reply.sequence, reply.word_count);
+                const new_remaining = source.replyRemainingSize();
+                if (new_remaining != remaining) {
+                    try source.discardRemaining();
+                    return;
+                }
+                log.info("unhandled X11 {f}", .{source.readFmt()});
+            } else {
+                log.info("unhandled X11 {f} (set zin_config.x11_unhandled_reply to handle it)", .{source.readFmt()});
+            }
             try source.discardRemaining();
-            return error.TodoHandleReplyMessage;
+            return error.X11UnhandledReply;
         },
         .KeyPress => {
             const event = try source.read2(.KeyPress);
