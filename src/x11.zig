@@ -342,9 +342,11 @@ pub fn connect(out_err: *ConnectError) error{X11Connect}!void {
         .keymap = keymap,
         .write_error = null,
     };
+    global.onConnected();
 }
 pub fn disconnect() void {
     std.debug.assert(global.conn != null);
+    global.onDisconnect();
     global.conn.? = undefined;
     global.conn = null;
 
@@ -443,6 +445,20 @@ pub const global = struct {
     pub fn staticWindowCustomState(comptime window_id: zin.StaticWindowId) *StaticWindowCustomState(window_id) {
         return &@field(static_window_custom_states, @tagName(window_id));
     }
+    pub fn onConnected() void {
+        static_window_common_states = @splat(.not_created);
+        inline for (0..static_window_count) |window_id_int| {
+            const state = staticWindowCustomState(@enumFromInt(window_id_int));
+            state.onConnected();
+        }
+    }
+    pub fn onDisconnect() void {
+        static_window_common_states = @splat(.not_created);
+        inline for (0..static_window_count) |window_id_int| {
+            const state = staticWindowCustomState(@enumFromInt(window_id_int));
+            state.onDisconnect();
+        }
+    }
 };
 
 fn timerCount(comptime TimerId: type) usize {
@@ -480,6 +496,12 @@ fn StaticWindowCustomState(window_id: zin.StaticWindowId) type {
         pub const timer_count = timerCount(window_id.getConfig().TimerId());
 
         const Self = @This();
+        pub fn onConnected(self: *Self) void {
+            self.* = .{};
+        }
+        pub fn onDisconnect(self: *Self) void {
+            self.* = .{};
+        }
         pub fn onDestroyed(self: *Self) void {
             self.* = .{};
         }
