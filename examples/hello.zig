@@ -190,12 +190,12 @@ fn extraCallback(
     }
 }
 
-fn x11Visual(screen_index: u8, depth_index: u8, visual_index: u16, visual: *const zin.X11VisualType) void {
+fn x11Visual(screen_index: u8, depth: u8, visual_index: u16, visual: *const zin.X11VisualType) void {
     std.log.info(
-        "X11 Visual screen [{}] depth [{}] visual[{}] id={} class={f} bpp={} map_cnt={} red=0x{x} grn=0x{x} blu=0x{x}",
+        "X11 Visual screen[{}] depth {} visual[{}] id={} class={f} bits-per-ch={} map_cnt={} red=0x{x} grn=0x{x} blu=0x{x}",
         .{
             screen_index,
-            depth_index,
+            depth,
             visual_index,
             @intFromEnum(visual.id),
             zin.fmtEnum(visual.class),
