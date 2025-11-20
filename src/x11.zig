@@ -616,7 +616,7 @@ pub fn staticWindow(window_id: zin.StaticWindowId) type {
             //std.debug.assert(global.static_windows[@intFromEnum(window_id)] == null);
             const bg = global.conn.?.x11FromRgb(config.data().background);
             const size = windowPixelSizeFromInit(opt.size, global.conn.?.dpi_scale_x, global.conn.?.dpi_scale_y);
-            try createWindow(&config.data(), size, bg, global.conn.?.staticWindowId(window_id));
+            try createWindow(&config.data(), size, bg, global.conn.?.staticWindowId(window_id), opt.x11_visual);
             global.static_window_common_states[@intFromEnum(window_id)] = .{ .created = .{
                 .damaged = false,
             } };
@@ -722,6 +722,7 @@ fn createWindow(
     size: zin.XY,
     bg: u32,
     id: x11.Window,
+    visual: x11.Visual,
 ) zin.CreateWindowError!void {
     if (global.conn.?.write_error) |e| return e;
     global.conn.?.sink.CreateWindow(.{
@@ -734,7 +735,7 @@ fn createWindow(
         .height = @intCast(size.y),
         .border_width = 0, // TODO: what is this?
         .class = .input_output,
-        .visual_id = global.i.screen.root_visual,
+        .visual_id = visual,
     }, .{
         // .bg_pixmap = .copy_from_parent,
         .bg_pixel = bg,
