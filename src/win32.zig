@@ -544,6 +544,14 @@ fn getTime() u32 {
     return win32.GetTickCount() - t;
 }
 
+fn mouseDownFromWparam(wparam: win32.WPARAM) zin.MouseButtonsDown {
+    return .{
+        .left = 0 != (wparam & win32.MK_LBUTTON),
+        .right = 0 != (wparam & win32.MK_RBUTTON),
+        .middle = 0 != (wparam & win32.MK_MBUTTON),
+    };
+}
+
 const WndProc = fn (win32.HWND, u32, win32.WPARAM, win32.LPARAM) callconv(.winapi) win32.LRESULT;
 fn makeWndProc(
     config: zin.WindowConfig,
@@ -659,11 +667,19 @@ fn makeWndProc(
                         const pos = win32.pointFromLparam(lparam);
                         switch (config) {
                             .static => class.callback(
-                                .{ .mouse = .{ .position = .{ .x = pos.x, .y = pos.y }, .button = null } },
+                                .{ .mouse = .{
+                                    .position = .{ .x = pos.x, .y = pos.y },
+                                    .button = null,
+                                    .down = mouseDownFromWparam(wparam),
+                                } },
                             ),
                             .dynamic => class.callback(
                                 windowFromHwnd(hwnd),
-                                .{ .mouse = .{ .position = .{ .x = pos.x, .y = pos.y }, .button = null } },
+                                .{ .mouse = .{
+                                    .position = .{ .x = pos.x, .y = pos.y },
+                                    .button = null,
+                                    .down = mouseDownFromWparam(wparam),
+                                } },
                             ),
                         }
                     }
@@ -677,6 +693,7 @@ fn makeWndProc(
                                 .{ .mouse = .{
                                     .position = .{ .x = pos.x, .y = pos.y },
                                     .button = .{ .id = .left, .state = .down },
+                                    .down = mouseDownFromWparam(wparam),
                                 } },
                             ),
                             .dynamic => class.callback(
@@ -684,6 +701,7 @@ fn makeWndProc(
                                 .{ .mouse = .{
                                     .position = .{ .x = pos.x, .y = pos.y },
                                     .button = .{ .id = .left, .state = .down },
+                                    .down = mouseDownFromWparam(wparam),
                                 } },
                             ),
                         }
@@ -698,6 +716,7 @@ fn makeWndProc(
                                 .{ .mouse = .{
                                     .position = .{ .x = pos.x, .y = pos.y },
                                     .button = .{ .id = .left, .state = .up },
+                                    .down = mouseDownFromWparam(wparam),
                                 } },
                             ),
                             .dynamic => class.callback(
@@ -705,6 +724,7 @@ fn makeWndProc(
                                 .{ .mouse = .{
                                     .position = .{ .x = pos.x, .y = pos.y },
                                     .button = .{ .id = .left, .state = .up },
+                                    .down = mouseDownFromWparam(wparam),
                                 } },
                             ),
                         }
@@ -719,6 +739,7 @@ fn makeWndProc(
                                 .{ .mouse = .{
                                     .position = .{ .x = pos.x, .y = pos.y },
                                     .button = .{ .id = .right, .state = .down },
+                                    .down = mouseDownFromWparam(wparam),
                                 } },
                             ),
                             .dynamic => class.callback(
@@ -726,6 +747,7 @@ fn makeWndProc(
                                 .{ .mouse = .{
                                     .position = .{ .x = pos.x, .y = pos.y },
                                     .button = .{ .id = .right, .state = .down },
+                                    .down = mouseDownFromWparam(wparam),
                                 } },
                             ),
                         }
@@ -740,6 +762,7 @@ fn makeWndProc(
                                 .{ .mouse = .{
                                     .position = .{ .x = pos.x, .y = pos.y },
                                     .button = .{ .id = .right, .state = .up },
+                                    .down = mouseDownFromWparam(wparam),
                                 } },
                             ),
                             .dynamic => class.callback(
@@ -747,6 +770,53 @@ fn makeWndProc(
                                 .{ .mouse = .{
                                     .position = .{ .x = pos.x, .y = pos.y },
                                     .button = .{ .id = .right, .state = .up },
+                                    .down = mouseDownFromWparam(wparam),
+                                } },
+                            ),
+                        }
+                    }
+                    return 0;
+                },
+                win32.WM_MBUTTONDOWN => {
+                    if (comptime config.data().mouse_events) {
+                        const pos = win32.pointFromLparam(lparam);
+                        switch (config) {
+                            .static => class.callback(
+                                .{ .mouse = .{
+                                    .position = .{ .x = pos.x, .y = pos.y },
+                                    .button = .{ .id = .middle, .state = .down },
+                                    .down = mouseDownFromWparam(wparam),
+                                } },
+                            ),
+                            .dynamic => class.callback(
+                                windowFromHwnd(hwnd),
+                                .{ .mouse = .{
+                                    .position = .{ .x = pos.x, .y = pos.y },
+                                    .button = .{ .id = .middle, .state = .down },
+                                    .down = mouseDownFromWparam(wparam),
+                                } },
+                            ),
+                        }
+                    }
+                    return 0;
+                },
+                win32.WM_MBUTTONUP => {
+                    if (comptime config.data().mouse_events) {
+                        const pos = win32.pointFromLparam(lparam);
+                        switch (config) {
+                            .static => class.callback(
+                                .{ .mouse = .{
+                                    .position = .{ .x = pos.x, .y = pos.y },
+                                    .button = .{ .id = .middle, .state = .up },
+                                    .down = mouseDownFromWparam(wparam),
+                                } },
+                            ),
+                            .dynamic => class.callback(
+                                windowFromHwnd(hwnd),
+                                .{ .mouse = .{
+                                    .position = .{ .x = pos.x, .y = pos.y },
+                                    .button = .{ .id = .middle, .state = .up },
+                                    .down = mouseDownFromWparam(wparam),
                                 } },
                             ),
                         }

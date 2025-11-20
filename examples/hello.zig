@@ -45,6 +45,11 @@ const global = struct {
     var last_animation: ?std.time.Instant = null;
     var text_position: f32 = 0;
     var mouse_position: ?zin.XY = null;
+    var mouse_down: zin.MouseButtonsDown = .{
+        .left = false,
+        .right = false,
+        .middle = false,
+    };
 };
 
 pub fn main() !void {
@@ -120,6 +125,15 @@ fn callback(cb: zin.Callback(.{ .static = .main })) void {
             const margin_left = zin.scale(i32, 10, dpi_scale.x);
             const top = zin.scale(i32, 50, dpi_scale.y);
             d.text("Press 'n' to create a new window.", margin_left, top, .white);
+            {
+                var str_buf: [100]u8 = undefined;
+                const str = std.fmt.bufPrint(&str_buf, "Mouse left:{s} right:{s} middle:{s}", .{
+                    if (global.mouse_down.left) "1" else "0",
+                    if (global.mouse_down.right) "1" else "0",
+                    if (global.mouse_down.middle) "1" else "0",
+                }) catch unreachable;
+                d.text(str, margin_left, top + zin.scale(i32, 20, dpi_scale.y), .white);
+            }
             d.text("Weeee!!!", animate.x, animate.y, .white);
             if (global.mouse_position) |p| {
                 d.text("Mouse", p.x, p.y, .white);
@@ -153,6 +167,7 @@ fn callback(cb: zin.Callback(.{ .static = .main })) void {
         },
         .mouse => |mouse| {
             global.mouse_position = mouse.position;
+            global.mouse_down = mouse.down;
             zin.staticWindow(.main).invalidate();
         },
     }

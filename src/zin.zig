@@ -307,6 +307,12 @@ pub const MouseButtonState = struct {
 pub const Mouse = struct {
     position: XY,
     button: ?MouseButtonState,
+    down: MouseButtonsDown,
+};
+pub const MouseButtonsDown = struct {
+    left: bool,
+    right: bool,
+    middle: bool,
 };
 
 const Field = struct {

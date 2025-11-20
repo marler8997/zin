@@ -796,6 +796,24 @@ fn ZinView(
             });
         }
 
+        fn getMouseButtonsDown(event: objc.Object, button_event: ?zin.MouseButtonState) zin.MouseButtonsDown {
+            const pressed_mask = event.msgSend(c_ulong, "pressedMouseButtons", .{});
+            var down: zin.MouseButtonsDown = .{
+                .left = (pressed_mask & 1) != 0,
+                .right = (pressed_mask & 2) != 0,
+                .middle = (pressed_mask & 4) != 0,
+            };
+            // For button down/up events, pressedMouseButtons may not reflect the current event yet
+            if (button_event) |btn| {
+                switch (btn.id) {
+                    .left => down.left = (btn.state == .down),
+                    .right => down.right = (btn.state == .down),
+                    .middle => down.middle = (btn.state == .down),
+                }
+            }
+            return down;
+        }
+
         fn mouseEvent(self: Self, event: objc.Object, button: ?zin.MouseButtonState) void {
             const client_size = self.any().getClientSize();
             const location = self.getEventLoc(event, client_size.y);
@@ -806,6 +824,7 @@ fn ZinView(
                         .y = location.y,
                     },
                     .button = button,
+                    .down = getMouseButtonsDown(event, button),
                 } }),
                 .dynamic => @panic("todo"),
             }

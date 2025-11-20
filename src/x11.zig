@@ -855,12 +855,12 @@ pub fn asciiFromKeysym(vk: VirtualKey) ?u8 {
     };
 }
 
-fn mouseButtonFromMsg(detail: u8) zin.MouseButtonId {
+fn mouseButtonFromMsg(detail: u8) ?zin.MouseButtonId {
     return switch (detail) {
         1 => .left,
         2 => .middle,
         3 => .right,
-        else => |d| std.debug.panic("todo: map button {} to zin", .{d}),
+        else => null,
     };
 }
 
@@ -1176,7 +1176,10 @@ pub fn x11HandleMessage(source: *x11.Source, msg_kind: x11.ServerMsgKind) !void 
         },
         .ButtonPress => {
             const event = try source.read2(.ButtonPress);
-            const button_id = mouseButtonFromMsg(event.button);
+            const button_id = mouseButtonFromMsg(event.button) orelse {
+                log.warn("no mapping for X11 button {} to zin (ButtonPress)", .{event.button});
+                return;
+            };
             const pos: zin.XY = .{
                 .x = @intCast(event.event_x),
                 .y = @intCast(event.event_y),
@@ -1188,6 +1191,11 @@ pub fn x11HandleMessage(source: *x11.Source, msg_kind: x11.ServerMsgKind) !void 
                         staticCallback(window_id)(.{ .mouse = .{
                             .position = pos,
                             .button = .{ .id = button_id, .state = .down },
+                            .down = .{
+                                .left = event.state.button1 or (button_id == .left),
+                                .right = event.state.button3 or (button_id == .right),
+                                .middle = event.state.button2 or (button_id == .middle),
+                            },
                         } });
                     }
                 },
@@ -1195,7 +1203,10 @@ pub fn x11HandleMessage(source: *x11.Source, msg_kind: x11.ServerMsgKind) !void 
         },
         .ButtonRelease => {
             const event = try source.read2(.ButtonRelease);
-            const button_id = mouseButtonFromMsg(event.button);
+            const button_id = mouseButtonFromMsg(event.button) orelse {
+                log.warn("no mapping for X11 button {} to zin (ButtonRelease)", .{event.button});
+                return;
+            };
             const pos: zin.XY = .{
                 .x = @intCast(event.event_x),
                 .y = @intCast(event.event_y),
@@ -1207,6 +1218,11 @@ pub fn x11HandleMessage(source: *x11.Source, msg_kind: x11.ServerMsgKind) !void 
                         staticCallback(window_id)(.{ .mouse = .{
                             .position = pos,
                             .button = .{ .id = button_id, .state = .up },
+                            .down = .{
+                                .left = event.state.button1 and (button_id != .left),
+                                .right = event.state.button3 and (button_id != .right),
+                                .middle = event.state.button2 and (button_id != .middle),
+                            },
                         } });
                     }
                 },
@@ -1228,7 +1244,15 @@ pub fn x11HandleMessage(source: *x11.Source, msg_kind: x11.ServerMsgKind) !void 
                 inline else => |window_id| {
                     const config = zin.WindowConfig{ .static = window_id };
                     if (config.data().mouse_events) {
-                        staticCallback(window_id)(.{ .mouse = .{ .position = pos, .button = null } });
+                        staticCallback(window_id)(.{ .mouse = .{
+                            .position = pos,
+                            .button = null,
+                            .down = .{
+                                .left = event.state.button1,
+                                .right = event.state.button3,
+                                .middle = event.state.button2,
+                            },
+                        } });
                     }
                 },
             } else @panic("todo: motion_notify on dynamic windows");
