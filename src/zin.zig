@@ -29,6 +29,11 @@ pub const platform = switch (platform_kind) {
     .macos => @import("macos.zig"),
 };
 
+pub const X11VisualType = switch (platform_kind) {
+    .x11 => platform.x11.VisualType,
+    else => void,
+};
+
 pub const Config = @import("Config.zig");
 pub const config = if (@hasDecl(root, "zin_config")) root.zin_config else .{};
 pub const StaticWindowId = config.StaticWindowId;
@@ -599,6 +604,48 @@ pub fn MouseState(comptime MouseTarget: type, comptime opt: struct {
             if (interaction.buttons.left == key_state) return false;
             interaction.buttons.left = key_state;
             return true;
+        }
+    };
+}
+
+/// returns a formatter that will print the enum value name if it exists,
+/// otherwise, it prints a question mark followed by the value, i.e. ?(123)
+pub fn fmtEnum(enum_value: anytype) FmtEnum(@TypeOf(enum_value)) {
+    return .{ .value = enum_value };
+}
+pub fn FmtEnum(comptime T: type) type {
+    return struct {
+        value: T,
+
+        const Self = @This();
+        pub const format = if (zig_atleast_15) formatNew else formatLegacy;
+        fn formatNew(self: Self, writer: *std.Io.Writer) error{WriteFailed}!void {
+            if (@typeInfo(T).@"enum".is_exhaustive) {
+                try writer.print("{s}", .{@tagName(self.value)});
+            } else {
+                @setEvalBranchQuota(@typeInfo(T).@"enum".fields.len);
+                if (std.enums.tagName(T, self.value)) |name| {
+                    try writer.print("{s}", .{name});
+                } else {
+                    try writer.print("?({d})", .{@intFromEnum(self.value)});
+                }
+            }
+        }
+        fn formatLegacy(
+            self: Self,
+            comptime fmt: []const u8,
+            options: std.fmt.FormatOptions,
+            writer: anytype,
+        ) !void {
+            _ = fmt;
+            _ = options;
+            if (@typeInfo(T).@"enum".is_exhaustive) {
+                try writer.print("{s}", .{@tagName(self.value)});
+            } else if (std.enums.tagName(T, self.value)) |name| {
+                try writer.print("{s}", .{name});
+            } else {
+                try writer.print("?({d})", .{@intFromEnum(self.value)});
+            }
         }
     };
 }

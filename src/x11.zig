@@ -297,7 +297,9 @@ pub fn connect(out_err: *ConnectError) error{X11Connect}!void {
     };
     std.log.info("setup reply {f}", .{global.i.setup});
     var source: x11.Source = .initFinishSetup(global.i.socket_reader.interface(), &global.i.setup);
-    global.i.screen = (x11.draft.readSetupDynamic(&source, &global.i.setup, .{}) catch |err| switch (err) {
+    global.i.screen = (x11.draft.readSetupDynamic(&source, &global.i.setup, .{
+        .on_visual = if (zin.config.x11_on_visual) |f| &f else null,
+    }) catch |err| switch (err) {
         error.ReadFailed => return out_err.set(.{
             .recv_error = global.i.socket_reader.getError() orelse error.Unexpected,
         }),
@@ -1126,7 +1128,7 @@ pub fn x11HandleMessage(source: *x11.Source, msg_kind: x11.ServerMsgKind) !void 
                 }
             }
 
-            if (zin.config.x11_unhandled_reply) |func| {
+            if (zin.config.x11_on_unhandled_reply) |func| {
                 try func(reply.flexible, reply.sequence, reply.word_count);
                 const new_remaining = source.replyRemainingSize();
                 if (new_remaining != remaining) {

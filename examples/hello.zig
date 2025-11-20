@@ -5,9 +5,10 @@ const win32 = zin.platform.win32;
 
 pub const zin_config: zin.Config = .{
     .StaticWindowId = StaticWindowId,
+    .x11_on_visual = x11Visual,
     // An optional callback if an x11 unhandled reply comes in.  Allows apps to
     // send their own X11 requests outside of what Zin supports.
-    .x11_unhandled_reply = x11UnhandledReply,
+    .x11_on_unhandled_reply = x11UnhandledReply,
 };
 const StaticWindowId = enum {
     main,
@@ -189,6 +190,23 @@ fn extraCallback(
     }
 }
 
+fn x11Visual(screen_index: u8, depth_index: u8, visual_index: u16, visual: *const zin.X11VisualType) void {
+    std.log.info(
+        "X11 Visual screen [{}] depth [{}] visual[{}] id={} class={f} bpp={} map_cnt={} red=0x{x} grn=0x{x} blu=0x{x}",
+        .{
+            screen_index,
+            depth_index,
+            visual_index,
+            @intFromEnum(visual.id),
+            zin.fmtEnum(visual.class),
+            visual.bits_per_rgb_value,
+            visual.colormap_entries,
+            visual.red_mask,
+            visual.green_mask,
+            visual.blue_mask,
+        },
+    );
+}
 fn x11UnhandledReply(flex: u8, seq: u16, words: u32) error{ X11Protocol, ReadFailed, EndOfStream }!void {
     std.log.err("not handling x11 reply (flex={}, seq={}, {} words)", .{ flex, seq, words });
 }
