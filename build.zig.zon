@@ -10,8 +10,8 @@
             .hash = "zigwin32-25.0.28-preview-AAAAAICM5AMResOGQnQ85mfe60TTOQeMtt7GRATUOKoP",
         },
         .x11 = .{
-            .url = "git+https://github.com/marler8997/zigx#92f26e0be4d0f23b91d7ec57884711a47c2773f3",
-            .hash = "x11-0.0.0-yWuw5lWXDwBvM9Vohb-r2yhM6ZeSYxh1kdOTNJhvxWOK",
+            .url = "git+https://github.com/marler8997/zigx#d53a1925babfeb59bbd160c735017242564979f0",
+            .hash = "x11-0.0.0-yWuw5sjLDwDJCSoas32HPOuobcBZBaW9xLgEmzEYi7Ag",
             .lazy = true,
         },
         .objc = .{
