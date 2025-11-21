@@ -495,15 +495,9 @@ pub const CreateWindowOptions = struct {
     title: [:0]const u8,
     size: WindowSizeInit,
     pos: ?XY,
-
-    x11_visual: switch (platform_kind) {
-        .x11 => platform.x11.Visual,
-        else => void,
-    } = switch (platform_kind) {
-        .x11 => .copy_from_parent,
-        else => {},
-    },
+    platform: platform.CreateWindowOptions = .{},
 };
+
 pub const CreateWindowError = error{
     WriteFailed,
 };

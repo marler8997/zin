@@ -227,6 +227,8 @@ fn windowSizeFromClient(
     return .{ .x = rect.right - rect.left, .y = rect.bottom - rect.top };
 }
 
+pub const CreateWindowOptions = struct {};
+
 pub fn createDynamicWindow(class: WindowClass, opt: zin.CreateWindowOptions) zin.CreateWindowError!DynamicWindow {
     return windowFromHwnd(try createWindow(class, &opt));
 }

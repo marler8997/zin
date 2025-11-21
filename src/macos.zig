@@ -177,6 +177,8 @@ pub const DynamicWindow = struct {
     }
 };
 
+pub const CreateWindowOptions = struct {};
+
 pub fn createDynamicWindow(class: WindowClass, opt: zin.CreateWindowOptions) zin.CreateWindowError!DynamicWindow {
     _ = class;
     _ = opt;

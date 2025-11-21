@@ -173,7 +173,7 @@ pub const Connection = struct {
         return self.setup.fixed().resource_id_base.add(@as(u32, @intFromEnum(id)) * fixed_ids_per_window + 1).graphicsContext();
     }
 
-    fn reserveId(self: *Connection) x11.Resource {
+    pub fn reserveId(self: *Connection) x11.Resource {
         const resource = global.i.setup.resource_id_base.add(@intCast(static_window_count * fixed_ids_per_window + self.next_id_offset));
         self.next_id_offset += 1;
         return resource;
@@ -616,7 +616,7 @@ pub fn staticWindow(window_id: zin.StaticWindowId) type {
             //std.debug.assert(global.static_windows[@intFromEnum(window_id)] == null);
             const bg = global.conn.?.x11FromRgb(config.data().background);
             const size = windowPixelSizeFromInit(opt.size, global.conn.?.dpi_scale_x, global.conn.?.dpi_scale_y);
-            try createWindow(&config.data(), size, bg, global.conn.?.staticWindowId(window_id), opt.x11_visual);
+            try createWindow(&config.data(), size, opt.pos, bg, global.conn.?.staticWindowId(window_id), &opt.platform);
             global.static_window_common_states[@intFromEnum(window_id)] = .{ .created = .{
                 .damaged = false,
             } };
@@ -717,37 +717,59 @@ pub fn createDynamicWindow(class: WindowClass, opt: zin.CreateWindowOptions) zin
     return .{ .id = window_id, .callback = class.callback };
 }
 
+pub const CreateWindowOptions = struct {
+    depth: u8 = 0, // 0 means copy_from_parent
+    border_width: u16 = 0, // not sure what this is
+    class: x11.window.Class = .input_output,
+    visual: x11.Visual = .copy_from_parent,
+    // the rest are also optional values in the underlying X11 CreateWindow request
+    bg_pixmap: x11.window.BgPixmap = .none,
+    border_pixmap: x11.window.BorderPixmap = .copy_from_parent,
+    border_pixel: ?u32 = null,
+    bit_gravity: x11.BitGravity = .forget,
+    win_gravity: x11.WinGravity = .north_west,
+    backing_store: x11.window.BackingStore = .not_useful,
+    backing_planes: u32 = 0xffffffff,
+    backing_pixel: u32 = 0,
+    override_redirect: bool = false,
+    save_under: bool = false,
+    dont_propagate: u32 = 0,
+    colormap: x11.Colormap = .copy_from_parent,
+    cursor: x11.Cursor = .none,
+};
+
 fn createWindow(
     config: *const zin.WindowConfigData,
     size: zin.XY,
+    maybe_pos: ?zin.XY,
     bg: u32,
     id: x11.Window,
-    visual: x11.Visual,
+    opt: *const CreateWindowOptions,
 ) zin.CreateWindowError!void {
     if (global.conn.?.write_error) |e| return e;
     global.conn.?.sink.CreateWindow(.{
         .window_id = id,
         .parent_window_id = global.i.screen.root,
-        .depth = 0, // we don't care, just inherit from the parent
-        .x = 0,
-        .y = 0,
-        .width = @intCast(size.x),
-        .height = @intCast(size.y),
-        .border_width = 0, // TODO: what is this?
-        .class = .input_output,
-        .visual_id = visual,
+        .depth = opt.depth,
+        .x = if (maybe_pos) |*p| clampFromI32(i16, p.x) else 0,
+        .y = if (maybe_pos) |*p| clampFromI32(i16, p.y) else 0,
+        .width = clampFromI32(u16, size.x),
+        .height = clampFromI32(u16, size.y),
+        .border_width = opt.border_width,
+        .class = opt.class,
+        .visual_id = opt.visual,
     }, .{
-        // .bg_pixmap = .copy_from_parent,
+        .bg_pixmap = opt.bg_pixmap,
         .bg_pixel = bg,
-        // .border_pixmap =
-        // .border_pixel = 0x01fa8ec9,
-        // .bit_gravity = .north_west,
-        // .win_gravity = .east,
-        // .backing_store = .when_mapped,
-        // .backing_planes = 0x1234,
-        // .backing_pixel = 0xbbeeeeff,
-        // .override_redirect = true,
-        // .save_under = true,
+        .border_pixmap = opt.border_pixmap,
+        .border_pixel = opt.border_pixel,
+        .bit_gravity = opt.bit_gravity,
+        .win_gravity = opt.win_gravity,
+        .backing_store = opt.backing_store,
+        .backing_planes = opt.backing_planes,
+        .backing_pixel = opt.backing_pixel,
+        .override_redirect = opt.override_redirect,
+        .save_under = opt.save_under,
         .event_mask = .{
             .KeyPress = 1,
             .KeyRelease = 1,
@@ -761,7 +783,9 @@ fn createWindow(
             // UnmapNotify, DestroyNotify
             .StructureNotify = if (config.window_size_events) 1 else 0,
         },
-        // .dont_propagate = 1,
+        .dont_propagate = opt.dont_propagate,
+        .colormap = opt.colormap,
+        .cursor = opt.cursor,
     }) catch |e| return global.conn.?.teeWriteError(e);
     global.conn.?.sink.CreateGc(
         gcFromWindow(id),
@@ -771,6 +795,12 @@ fn createWindow(
             .foreground = 0x224477bb,
         },
     ) catch |e| return global.conn.?.teeWriteError(e);
+}
+
+fn clampFromI32(comptime T: type, i: i32) T {
+    if (i > std.math.maxInt(T)) return std.math.maxInt(T);
+    if (i < std.math.minInt(T)) return std.math.minInt(T);
+    return @intCast(i);
 }
 
 pub const VirtualKey = enum(u16) {
