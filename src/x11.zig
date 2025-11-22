@@ -52,7 +52,7 @@ const FixedWindowObject = enum {
 };
 const fixed_ids_per_window: comptime_int = std.meta.fields(FixedWindowObject).len;
 
-const Extension = struct {
+pub const Extension = struct {
     name: x11.Slice(u16, [*]const u8),
     state: union(enum) {
         not_queried,
@@ -70,15 +70,20 @@ const Extension = struct {
             .resolved => |maybe_extension| maybe_extension,
         };
     }
-    pub fn onReply(
+    pub fn readReply(
         extension: *Extension,
         source: *x11.Source,
-        reply: x11.servermsg.Reply,
-    ) !void {
-        if (reply.sequence != switch (extension.state) {
+        sequence: u16,
+        word_count: u32,
+    ) !bool {
+        if (sequence != switch (extension.state) {
             .query_sent => |query| query.sequence,
-            .not_queried, .resolved => return,
-        }) return;
+            .not_queried, .resolved => return false,
+        }) return false;
+        if (word_count != 0) {
+            log.err("QueryExtension should have 0 extra reply words but got {}", .{word_count});
+            return error.X11Protocol;
+        }
         const ext = try source.read3Full(.QueryExtension);
         const present = switch (ext.present) {
             .no => false,
@@ -104,6 +109,7 @@ const Extension = struct {
             .event_base = ext.event_base,
             .error_base = ext.error_base,
         } };
+        return true;
     }
 };
 
@@ -1147,7 +1153,7 @@ pub fn x11HandleMessage(source: *x11.Source, msg_kind: x11.ServerMsgKind) !void 
         .Reply => {
             const reply = try source.read2(.Reply);
             const remaining = source.replyRemainingSize();
-            try global.conn.?.dbe.onReply(source, reply);
+            _ = try global.conn.?.dbe.readReply(source, reply.sequence, reply.word_count);
             {
                 const new_remaining = source.replyRemainingSize();
                 if (new_remaining != remaining) {
