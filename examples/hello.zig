@@ -58,10 +58,10 @@ pub fn main() !void {
     try zin.processInit(.{});
 
     {
-        var err: zin.X11ConnectError = undefined;
-        zin.x11Connect(&err) catch std.debug.panic("X11 connect failed: {f}", .{err});
+        var err: zin.ConnectError = undefined;
+        zin.connect(&err) catch std.debug.panic("connect failed: {f}", .{err});
     }
-    defer zin.x11Disconnect();
+    defer zin.disconnect();
 
     const icons = getIcons(96, 96);
 

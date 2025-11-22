@@ -9,10 +9,6 @@ pub fn build(b: *std.Build) void {
     const x11: bool = blk: {
         const x11_option = b.option(bool, "x11", "Use X11");
         break :blk switch (target.result.os.tag) {
-            .linux => {
-                if (x11_option == false) @panic("cannot disable x11 for linux target");
-                break :blk true;
-            },
             else => x11_option orelse false,
         };
     };

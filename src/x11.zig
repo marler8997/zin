@@ -375,7 +375,7 @@ pub const ConnectError = union(enum) {
         }
     }
 };
-pub fn connect(out_err: *ConnectError) error{X11Connect}!void {
+pub fn connect(out_err: *ConnectError) error{Connect}!void {
     std.debug.assert(global.process_init_called);
     std.debug.assert(global.conn == null);
     errdefer {

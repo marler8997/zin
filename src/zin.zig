@@ -9,17 +9,20 @@ pub const Rgb8 = @import("Rgb8.zig");
 
 const win32 = @import("win32.zig");
 const x11 = @import("x11.zig");
+const wayland = @import("wayland.zig");
 
 pub const zig_atleast_15 = @import("builtin").zig_version.order(.{ .major = 0, .minor = 15, .patch = 0 }) != .lt;
 
 const PlatformKind = enum {
     x11,
+    wayland,
     win32,
     macos,
 };
 pub const platform_kind: PlatformKind = if (build_options.x11) .x11 else switch (builtin.os.tag) {
     .windows => .win32,
     .macos => .macos,
+    .linux => .wayland,
     else => @compileError("with x11 being false, unsupported OS: " ++ @tagName(builtin.os.tag)),
 };
 
@@ -27,6 +30,7 @@ pub const platform = switch (platform_kind) {
     .x11 => @import("x11.zig"),
     .win32 => @import("win32.zig"),
     .macos => @import("macos.zig"),
+    .wayland => @import("wayland.zig"),
 };
 
 pub const X11VisualType = switch (platform_kind) {
@@ -72,6 +76,7 @@ pub const ProcessInitError = error{
     X11WsaStartupFailed,
     X11DisplayInvalidWtf8,
     X11BadDisplay,
+    WaylandNoXdgRuntimeDir,
     OutOfMemory,
 };
 pub const ProcessInitOptions = struct {
@@ -90,32 +95,45 @@ pub fn enforceDpiAware() DpiAwarenessError!void {
     if (builtin.os.tag == .windows) try win32.enforceDpiAware();
 }
 
-pub const X11ConnectError = if (platform_kind == .x11) x11.ConnectError else struct {
-    pub const format = if (zig_atleast_15) formatNew else formatLegacy;
-    fn formatNew(err: X11ConnectError, writer: *std.Io.Writer) error{WriteFailed}!void {
-        _ = err;
-        _ = writer;
-        unreachable;
-    }
-    fn formatLegacy(
-        err: X11ConnectError,
-        comptime fmt: []const u8,
-        options: std.fmt.FormatOptions,
-        writer: anytype,
-    ) !void {
-        _ = err;
-        _ = fmt;
-        _ = options;
-        _ = writer;
-        unreachable;
-    }
+pub const ConnectError = switch (platform_kind) {
+    .x11 => x11.ConnectError,
+    .wayland => wayland.ConnectError,
+    else => struct {
+        pub const format = if (zig_atleast_15) formatNew else formatLegacy;
+        fn formatNew(err: ConnectError, writer: *std.Io.Writer) error{WriteFailed}!void {
+            _ = err;
+            _ = writer;
+            unreachable;
+        }
+        fn formatLegacy(
+            err: ConnectError,
+            comptime fmt: []const u8,
+            options: std.fmt.FormatOptions,
+            writer: anytype,
+        ) !void {
+            _ = err;
+            _ = fmt;
+            _ = options;
+            _ = writer;
+            unreachable;
+        }
+    },
 };
-/// Connects to the X11 server, for non-X11 platforms does nothing.
-pub const x11Connect = if (platform_kind == .x11) x11.connect else connectNoOp;
-fn connectNoOp(err: *X11ConnectError) error{X11Connect}!void {
+
+/// For Wayland/X11 connects to the server, otherwise does nothing.
+pub const connect = switch (platform_kind) {
+    .x11 => x11.connect,
+    .wayland => wayland.connect,
+    else => connectNoOp,
+};
+fn connectNoOp(err: *ConnectError) error{Connect}!void {
     _ = err;
 }
-pub const x11Disconnect = if (platform_kind == .x11) x11.disconnect else disconnectNoOp;
+pub const disconnect = switch (platform_kind) {
+    .x11 => x11.disconnect,
+    .wayland => wayland.disconnect,
+    else => disconnectNoOp,
+};
 fn disconnectNoOp() void {}
 
 pub const ConnectionPtr = if (platform_kind == .x11) *Connection else void;
@@ -143,7 +161,7 @@ pub const MacOSKeyMods = switch (platform_kind) {
 pub const UnicodeKeyboardState = struct {
     array: switch (platform_kind) {
         .win32 => [256]u8,
-        .x11, .macos => void,
+        .x11, .wayland, .macos => void,
     },
 
     pub fn init() UnicodeKeyboardState {
@@ -156,20 +174,20 @@ pub const UnicodeKeyboardState = struct {
                 );
                 return result;
             },
-            .x11, .macos => .{ .array = {} },
+            .x11, .wayland, .macos => .{ .array = {} },
         };
     }
 
     pub fn ref(self: *UnicodeKeyboardState) UnicodeKeyboardStateRef {
         return switch (platform_kind) {
             .win32 => &self.array,
-            .x11, .macos => {},
+            .x11, .wayland, .macos => {},
         };
     }
 };
 pub const UnicodeKeyboardStateRef = switch (platform_kind) {
     .win32 => *[256]u8,
-    .x11, .macos => void,
+    .x11, .wayland, .macos => void,
 };
 
 pub const max_wtf16_per_key = 16;
@@ -225,6 +243,7 @@ pub const Key = struct {
                 }
                 return .{};
             },
+            .wayland => @panic("todo"),
             .macos => {
                 // For macOS, we'll provide a simple ASCII mapping for now
                 // A more complete implementation would use the NSEvent's characters method
