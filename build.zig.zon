@@ -14,11 +14,7 @@
             .hash = "x11-0.0.0-yWuw5sjLDwDJCSoas32HPOuobcBZBaW9xLgEmzEYi7Ag",
             .lazy = true,
         },
-        .objc = .{
-            .url = "git+https://github.com/mitchellh/zig-objc#3ab0d37c7d6b933d6ded1b3a35b6b60f05590a98",
-            .hash = "zig_objc-0.0.0-Ir_Sp3TyAADEVRTxXlScq3t_uKAM91MYNerZkHfbD0yt",
-            .lazy = true,
-        },
+        // objc is in build.zig because it doesn't work on both 0.14 and 0.15
     },
     .paths = .{
         "build.zig",

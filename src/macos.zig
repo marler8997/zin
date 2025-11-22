@@ -7,6 +7,8 @@ const c = @cImport({
 const objc = @import("objc");
 const cg = @import("macos/cg.zig");
 
+pub const zig_atleast_15 = @import("builtin").zig_version.order(.{ .major = 0, .minor = 15, .patch = 0 }) != .lt;
+
 const log = std.log.scoped(.macos);
 
 extern "c" fn NSApplicationLoad() c_char;
@@ -72,11 +74,17 @@ pub fn panic(panic_opt: zin.PanicOptions) type {
             if (!thread_is_panicing) {
                 thread_is_panicing = true;
                 var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-                const msg_z: [:0]const u8 = if (std.fmt.allocPrintZ(
+                const oom_msg = "allocate error message failed";
+                const msg_z: [:0]const u8 = if (zig_atleast_15) std.fmt.allocPrintSentinel(
                     arena.allocator(),
                     "{s}",
                     .{msg},
-                )) |msg_z| msg_z else |_| "failed allocate error message";
+                    0,
+                ) catch oom_msg else std.fmt.allocPrintZ(
+                    arena.allocator(),
+                    "{s}",
+                    .{msg},
+                ) catch oom_msg;
                 modalAlert(panic_opt.title, msg_z, "OK");
             }
             std.debug.defaultPanic(msg, ret_addr);
@@ -564,47 +572,47 @@ fn ZinView(
             // TODO: is this right?
             errdefer objc.disposeClassPair(class);
 
-            if (!try class.addMethod("drawRect:", drawRect)) @panic("addMethod drawRect failed");
+            if (!class.addMethod("drawRect:", drawRect)) @panic("addMethod drawRect failed");
             // ... add mouse methods as in previous example ...
             // Accept first responder status for input events
             //try objc.addMethod(class, "acceptsFirstResponder", acceptsFirstResponder, "B@:");
-            if (!try class.addMethod("viewDidMoveToWindow", viewDidMoveToWindow)) @panic("addMethod viewDidMoveToWindow failed");
-            if (!try class.addMethod("windowWillClose:", windowWillClose)) @panic("addMethod windowWillClose failed");
-            if (!try class.addMethod("windowShouldClose:", windowShouldClose)) @panic("addMethod windowShouldClose failed");
+            if (!class.addMethod("viewDidMoveToWindow", viewDidMoveToWindow)) @panic("addMethod viewDidMoveToWindow failed");
+            if (!class.addMethod("windowWillClose:", windowWillClose)) @panic("addMethod windowWillClose failed");
+            if (!class.addMethod("windowShouldClose:", windowShouldClose)) @panic("addMethod windowShouldClose failed");
 
-            if (!try class.addMethod("acceptsFirstResponder", acceptsFirstResponder))
+            if (!class.addMethod("acceptsFirstResponder", acceptsFirstResponder))
                 @panic("addMethod acceptsFirstResponder failed");
-            if (!try class.addMethod("becomeFirstResponder", becomeFirstResponder))
+            if (!class.addMethod("becomeFirstResponder", becomeFirstResponder))
                 @panic("addMethod becomeFirstResponder failed");
-            if (!try class.addMethod("resignFirstResponder", resignFirstResponder))
+            if (!class.addMethod("resignFirstResponder", resignFirstResponder))
                 @panic("addMethod resignFirstResponder failed");
 
             if (config.data().mouse_events) {
-                if (!try class.addMethod("mouseMoved:", mouseMoved)) @panic("addMethod mouseMoved failed");
-                if (!try class.addMethod("mouseDragged:", mouseDragged)) @panic("addMethod mouseDragged failed");
-                if (!try class.addMethod("rightMouseDragged:", rightMouseDragged)) @panic("addMethod rightMouseDragged failed");
-                if (!try class.addMethod("otherMouseDragged:", otherMouseDragged)) @panic("addMethod otherMouseDragged failed");
-                if (!try class.addMethod("mouseDown:", mouseDown)) @panic("addMethod mouseDown failed");
-                if (!try class.addMethod("mouseUp:", mouseUp)) @panic("addMethod mouseUp failed");
-                if (!try class.addMethod("rightMouseDown:", rightMouseDown)) @panic("addMethod rightMouseDown failed");
-                if (!try class.addMethod("rightMouseUp:", rightMouseUp)) @panic("addMethod rightMouseUp failed");
-                if (!try class.addMethod("otherMouseDown:", otherMouseDown)) @panic("addMethod otherMouseDown failed");
-                if (!try class.addMethod("otherMouseUp:", otherMouseUp)) @panic("addMethod otherMouseUp failed");
+                if (!class.addMethod("mouseMoved:", mouseMoved)) @panic("addMethod mouseMoved failed");
+                if (!class.addMethod("mouseDragged:", mouseDragged)) @panic("addMethod mouseDragged failed");
+                if (!class.addMethod("rightMouseDragged:", rightMouseDragged)) @panic("addMethod rightMouseDragged failed");
+                if (!class.addMethod("otherMouseDragged:", otherMouseDragged)) @panic("addMethod otherMouseDragged failed");
+                if (!class.addMethod("mouseDown:", mouseDown)) @panic("addMethod mouseDown failed");
+                if (!class.addMethod("mouseUp:", mouseUp)) @panic("addMethod mouseUp failed");
+                if (!class.addMethod("rightMouseDown:", rightMouseDown)) @panic("addMethod rightMouseDown failed");
+                if (!class.addMethod("rightMouseUp:", rightMouseUp)) @panic("addMethod rightMouseUp failed");
+                if (!class.addMethod("otherMouseDown:", otherMouseDown)) @panic("addMethod otherMouseDown failed");
+                if (!class.addMethod("otherMouseUp:", otherMouseUp)) @panic("addMethod otherMouseUp failed");
 
-                if (!try class.addMethod("cursorUpdate:", cursorUpdate)) @panic("addMethod cursorUpdate failed");
-                if (!try class.addMethod("resetCursorRects", resetCursorRects)) @panic("addMethod resetCursorRects failed");
+                if (!class.addMethod("cursorUpdate:", cursorUpdate)) @panic("addMethod cursorUpdate failed");
+                if (!class.addMethod("resetCursorRects", resetCursorRects)) @panic("addMethod resetCursorRects failed");
             }
 
             if (config.data().key_events) {
-                if (!try class.addMethod("keyDown:", keyDown)) @panic("addMethod keyDown failed");
-                if (!try class.addMethod("keyUp:", keyUp)) @panic("addMethod keyUp failed");
-                if (!try class.addMethod("flagsChanged:", flagsChanged)) @panic("addMethod flagsChanged failed");
+                if (!class.addMethod("keyDown:", keyDown)) @panic("addMethod keyDown failed");
+                if (!class.addMethod("keyUp:", keyUp)) @panic("addMethod keyUp failed");
+                if (!class.addMethod("flagsChanged:", flagsChanged)) @panic("addMethod flagsChanged failed");
             }
 
             switch (config.data().timers) {
                 .none => {},
                 .one, .type => {
-                    if (!try class.addMethod("handleTimer:", handleTimer)) @panic("addMethod handleTimer failed");
+                    if (!class.addMethod("handleTimer:", handleTimer)) @panic("addMethod handleTimer failed");
                 },
             }
 
@@ -632,7 +640,7 @@ fn ZinView(
             return .{ .obj = obj };
         }
 
-        fn viewDidMoveToWindow(object_id: objc.c.id, sel: objc.c.SEL) callconv(.C) void {
+        fn viewDidMoveToWindow(object_id: objc.c.id, sel: objc.c.SEL) callconv(.c) void {
             const self: Self = .{ .obj = .{ .value = object_id } };
             _ = sel;
 
@@ -672,7 +680,7 @@ fn ZinView(
                 _ = w.obj.msgSend(void, "setAcceptsMouseMovedEvents:", .{true});
             }
         }
-        fn windowShouldClose(object_id: objc.c.id, sel: objc.c.SEL, sender: objc.c.id) callconv(.C) bool {
+        fn windowShouldClose(object_id: objc.c.id, sel: objc.c.SEL, sender: objc.c.id) callconv(.c) bool {
             _ = sel;
             _ = sender;
             const self: Self = .{ .obj = .{ .value = object_id } };
@@ -683,14 +691,14 @@ fn ZinView(
             }
             return false;
         }
-        fn windowWillClose(object_id: objc.c.id, sel: objc.c.SEL, notification: objc.c.id) callconv(.C) void {
+        fn windowWillClose(object_id: objc.c.id, sel: objc.c.SEL, notification: objc.c.id) callconv(.c) void {
             _ = object_id;
             _ = sel;
             _ = notification;
             std.debug.panic("TODO: windowWillClose", .{});
         }
 
-        fn handleTimer(object_id: objc.c.id, sel: objc.c.SEL, timer_obj_id: objc.c.id) callconv(.C) void {
+        fn handleTimer(object_id: objc.c.id, sel: objc.c.SEL, timer_obj_id: objc.c.id) callconv(.c) void {
             _ = object_id;
             _ = sel;
 
@@ -709,7 +717,7 @@ fn ZinView(
             }
         }
 
-        fn drawRect(object_id: objc.c.id, _: objc.c.SEL, rect: NSRect) callconv(.C) void {
+        fn drawRect(object_id: objc.c.id, _: objc.c.SEL, rect: NSRect) callconv(.c) void {
             _ = rect;
             const self: Self = .{ .obj = .{ .value = object_id } };
 
@@ -730,20 +738,20 @@ fn ZinView(
             c.CGContextFlush(ctx);
         }
 
-        fn acceptsFirstResponder(object_id: objc.c.id, sel: objc.c.SEL) callconv(.C) bool {
+        fn acceptsFirstResponder(object_id: objc.c.id, sel: objc.c.SEL) callconv(.c) bool {
             _ = object_id;
             _ = sel;
             return true;
         }
 
-        fn becomeFirstResponder(object_id: objc.c.id, sel: objc.c.SEL) callconv(.C) bool {
+        fn becomeFirstResponder(object_id: objc.c.id, sel: objc.c.SEL) callconv(.c) bool {
             _ = sel;
             _ = object_id;
             log.debug("View became first responder", .{});
             return true; // Return true to accept becoming first responder
         }
 
-        fn resignFirstResponder(object_id: objc.c.id, sel: objc.c.SEL) callconv(.C) bool {
+        fn resignFirstResponder(object_id: objc.c.id, sel: objc.c.SEL) callconv(.c) bool {
             _ = sel;
             _ = object_id;
             log.debug("View resigned first responder", .{});
@@ -762,7 +770,7 @@ fn ZinView(
             };
         }
 
-        fn cursorUpdate(object_id: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.C) void {
+        fn cursorUpdate(object_id: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.c) void {
             _ = event_id; // We don't need to use the event for basic cursor setting
             const self: Self = .{ .obj = .{ .value = object_id } };
             _ = self;
@@ -786,7 +794,7 @@ fn ZinView(
         }
 
         // Override resetCursorRects to define cursor regions in your view
-        fn resetCursorRects(object_id: objc.c.id, _: objc.c.SEL) callconv(.C) void {
+        fn resetCursorRects(object_id: objc.c.id, _: objc.c.SEL) callconv(.c) void {
             const self: Self = .{ .obj = .{ .value = object_id } };
             const bounds = self.obj.msgSend(NSRect, "bounds", .{});
             // Get the cursor you want to use
@@ -831,50 +839,50 @@ fn ZinView(
                 .dynamic => @panic("todo"),
             }
         }
-        fn mouseMoved(object_id: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.C) void {
+        fn mouseMoved(object_id: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.c) void {
             const self: Self = .{ .obj = .{ .value = object_id } };
             const event = objc.Object{ .value = event_id };
             self.mouseEvent(event, null);
         }
-        fn mouseDragged(object_id: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.C) void {
+        fn mouseDragged(object_id: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.c) void {
             const self: Self = .{ .obj = .{ .value = object_id } };
             const event = objc.Object{ .value = event_id };
             // TODO: verify the left mouse is down?
             self.mouseEvent(event, null);
         }
-        fn rightMouseDragged(object_id: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.C) void {
+        fn rightMouseDragged(object_id: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.c) void {
             const self: Self = .{ .obj = .{ .value = object_id } };
             const event = objc.Object{ .value = event_id };
             // TODO: verify the right mouse is down?
             self.mouseEvent(event, null);
         }
-        fn otherMouseDragged(object_id: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.C) void {
+        fn otherMouseDragged(object_id: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.c) void {
             const self: Self = .{ .obj = .{ .value = object_id } };
             const event = objc.Object{ .value = event_id };
             // TODO: verify the other mouse is down?
             self.mouseEvent(event, null);
         }
-        fn mouseDown(object_id: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.C) void {
+        fn mouseDown(object_id: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.c) void {
             const self: Self = .{ .obj = .{ .value = object_id } };
             const event = objc.Object{ .value = event_id };
             self.mouseEvent(event, .{ .id = .left, .state = .down });
         }
-        fn mouseUp(object_id: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.C) void {
+        fn mouseUp(object_id: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.c) void {
             const self: Self = .{ .obj = .{ .value = object_id } };
             const event = objc.Object{ .value = event_id };
             self.mouseEvent(event, .{ .id = .left, .state = .up });
         }
-        fn rightMouseDown(object_id: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.C) void {
+        fn rightMouseDown(object_id: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.c) void {
             const self: Self = .{ .obj = .{ .value = object_id } };
             const event = objc.Object{ .value = event_id };
             self.mouseEvent(event, .{ .id = .right, .state = .down });
         }
-        fn rightMouseUp(object_id: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.C) void {
+        fn rightMouseUp(object_id: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.c) void {
             const self: Self = .{ .obj = .{ .value = object_id } };
             const event = objc.Object{ .value = event_id };
             self.mouseEvent(event, .{ .id = .right, .state = .up });
         }
-        fn otherMouseDown(object_id: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.C) void {
+        fn otherMouseDown(object_id: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.c) void {
             const self: Self = .{ .obj = .{ .value = object_id } };
             const event = objc.Object{ .value = event_id };
             // Get button number to check if it's middle button (usually 2)
@@ -883,7 +891,7 @@ fn ZinView(
                 self.mouseEvent(event, .{ .id = .middle, .state = .down });
             }
         }
-        fn otherMouseUp(object_id: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.C) void {
+        fn otherMouseUp(object_id: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.c) void {
             const self: Self = .{ .obj = .{ .value = object_id } };
             const event = objc.Object{ .value = event_id };
             // Get button number to check if it's middle button (usually 2)
@@ -893,7 +901,7 @@ fn ZinView(
             }
         }
 
-        fn keyDown(object_id: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.C) void {
+        fn keyDown(object_id: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.c) void {
             _ = object_id;
             const event = objc.Object{ .value = event_id };
 
@@ -921,7 +929,7 @@ fn ZinView(
             }
         }
 
-        fn keyUp(object_id: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.C) void {
+        fn keyUp(object_id: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.c) void {
             _ = object_id;
             const event = objc.Object{ .value = event_id };
 
@@ -946,7 +954,7 @@ fn ZinView(
             }
         }
 
-        fn flagsChanged(object_id: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.C) void {
+        fn flagsChanged(object_id: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.c) void {
             _ = object_id;
             const event = objc.Object{ .value = event_id };
 
