@@ -113,6 +113,121 @@ pub const Extension = struct {
     }
 };
 
+// The XFIXES extension requires that QueryVersion be called first before any
+// other requests are sent, so, this is provided to help avoid the issue of
+// inadvertently forgetting to do this.
+pub const FixesExtension = struct {
+    max_supported_version: struct {
+        major: u32,
+        minor: u32,
+    },
+    state: union(enum) {
+        not_queried,
+        query_extension_sent: u16, // the sequence number
+        got_extension: u8, // opcode base
+        query_version_sent: struct {
+            opcode_base: u8,
+            sequence: u16,
+        },
+        resolved: ?Resolved,
+    } = .not_queried,
+
+    pub const Resolved = struct {
+        opcode_base: u8,
+        version: struct { major: u32, minor: u32 },
+    };
+
+    pub fn get(extension: *FixesExtension, sink: *x11.RequestSink) error{WriteFailed}!?Resolved {
+        return switch (extension.state) {
+            .not_queried => {
+                try sink.QueryExtension(x11.fixes.name);
+                extension.state = .{ .query_extension_sent = sink.sequence };
+                return null;
+            },
+            .got_extension => |opcode_base| {
+                try x11.fixes.request.QueryVersion(
+                    sink,
+                    opcode_base,
+                    extension.max_supported_version.major,
+                    extension.max_supported_version.minor,
+                );
+                extension.state = .{ .query_version_sent = .{
+                    .opcode_base = opcode_base,
+                    .sequence = sink.sequence,
+                } };
+                return null;
+            },
+            .query_extension_sent, .query_version_sent => null,
+            .resolved => |r| r,
+        };
+    }
+    pub fn readReply(
+        extension: *FixesExtension,
+        source: *x11.Source,
+        sequence: u16,
+        word_count: u32,
+    ) error{ X11Protocol, EndOfStream, ReadFailed }!bool {
+        const request: union(enum) {
+            QueryExtension,
+            QueryVersion: u8, // the opcode base
+        } = switch (extension.state) {
+            .not_queried, .got_extension, .resolved => return false,
+            .query_extension_sent => |query_sequence| if (query_sequence == sequence) .QueryExtension else return false,
+            .query_version_sent => |q| if (q.sequence == sequence) .{ .QueryVersion = q.opcode_base } else return false,
+        };
+
+        extension.state, const maybe_error: ?error{ X11Protocol, EndOfStream, ReadFailed } = blk: {
+            if (word_count != 0) {
+                log.err("{s} should have 0 extra reply words but got {}", .{ @tagName(request), word_count });
+                break :blk .{ .{ .resolved = null }, error.X11Protocol };
+            }
+            switch (request) {
+                .QueryExtension => {
+                    const ext = source.read3Full(.QueryExtension) catch |err| break :blk .{
+                        .{ .resolved = null },
+                        err,
+                    };
+                    const present = switch (ext.present) {
+                        .no => false,
+                        .yes => true,
+                        else => |v| {
+                            log.err(
+                                "expected extension '{s}' present to be 0 or 1 but got {}",
+                                .{ x11.fixes.name, v },
+                            );
+                            break :blk .{ .{ .resolved = null }, error.X11Protocol };
+                        },
+                    };
+                    if (present) {
+                        log.info(
+                            "extension '{s}': bases opcode={} event={} error={}",
+                            .{ x11.fixes.name, ext.opcode_base, ext.event_base, ext.error_base },
+                        );
+                    } else {
+                        log.info("extension '{s}': not present", .{x11.fixes.name});
+                    }
+                    break :blk .{
+                        .{ .got_extension = ext.opcode_base },
+                        null,
+                    };
+                },
+                .QueryVersion => |opcode_base| {
+                    const version = source.read3Full(.fixes_QueryVersion) catch |err| break :blk .{
+                        .{ .resolved = null },
+                        err,
+                    };
+                    log.info("extension '{s}': version {}.{}", .{ x11.fixes.name, version.major, version.minor });
+                    break :blk .{ .{ .resolved = .{
+                        .opcode_base = opcode_base,
+                        .version = .{ .major = version.major, .minor = version.minor },
+                    } }, null };
+                },
+            }
+        };
+        return if (maybe_error) |e| e else true;
+    }
+};
+
 pub const Connection = struct {
     sink: x11.RequestSink,
     source: x11.Source,
