@@ -82,7 +82,7 @@ pub fn main() !void {
     });
     defer zin.staticWindow(.main).destroy();
     zin.staticWindow(.main).show();
-    zin.staticWindow(.main).startTimer({}, 14);
+    zin.staticWindow(.main).startTimerMillis({}, 14);
 
     try zin.mainLoop();
 }

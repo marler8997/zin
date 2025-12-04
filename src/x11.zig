@@ -529,7 +529,7 @@ const Window = struct {
             global.conn.?.sink.MapWindow(self.id) catch |e| global.conn.?.setWriteError(e);
         }
     }
-    pub fn startTimer(self: DynamicWindow, id: usize, millis: u32) void {
+    pub fn startTimerMillis(self: DynamicWindow, id: usize, millis: u32) void {
         _ = self;
         _ = id;
         _ = millis;
@@ -676,7 +676,7 @@ const StaticWindowAndTimerId = blk: {
 
 const Timer = struct {
     start: std.time.Instant,
-    duration_ms: u64,
+    duration_nanos: u64,
 };
 
 /// Access the global x11 socket.
@@ -794,11 +794,14 @@ pub fn staticWindow(window_id: zin.StaticWindowId) type {
                 .created => |*created| created.damaged = true,
             }
         }
-        pub fn startTimer(id: window_id.getConfig().TimerId(), millis: u32) void {
+        pub fn startTimerMillis(id: window_id.getConfig().TimerId(), millis: u32) void {
+            startTimerNanos(id, std.time.ns_per_ms * @as(u64, millis));
+        }
+        pub fn startTimerNanos(id: window_id.getConfig().TimerId(), nanos: u64) void {
             const timers = &global.staticWindowCustomState(window_id).timers;
             timers[zin.intFromTimerId(usize, window_id.getConfig().TimerId(), id)] = .{
                 .start = std.time.Instant.now() catch unreachable,
-                .duration_ms = millis,
+                .duration_nanos = nanos,
             };
         }
     };
@@ -1094,7 +1097,7 @@ pub fn x11UpdateWindows() error{WriteFailed}!usize {
     return update_count;
 }
 
-fn pollSocketReader(socket_reader: *x11.SocketReader, timeout_ms: i32) !enum { ready, timeout } {
+fn pollSocketReader(socket_reader: *x11.SocketReader, timeout_nanos: ?u64) !enum { ready, timeout } {
     if (socket_reader.interface().bufferedLen() > 0) return .ready;
     var poll_fds = [_]std.posix.pollfd{
         .{
@@ -1103,7 +1106,11 @@ fn pollSocketReader(socket_reader: *x11.SocketReader, timeout_ms: i32) !enum { r
             .revents = 0,
         },
     };
-    return switch (try std.posix.poll(&poll_fds, timeout_ms)) {
+    const timeout_ts: std.posix.timespec = if (timeout_nanos) |t| .{
+        .sec = @intCast(@divTrunc(t, std.time.ns_per_s)),
+        .nsec = @intCast(t % std.time.ns_per_s),
+    } else undefined;
+    return switch (try std.posix.ppoll(&poll_fds, if (timeout_nanos != null) &timeout_ts else null, null)) {
         0 => .timeout,
         1 => .ready,
         else => unreachable,
@@ -1112,7 +1119,7 @@ fn pollSocketReader(socket_reader: *x11.SocketReader, timeout_ms: i32) !enum { r
 
 const Timeout = union(enum) {
     none,
-    ms: i32,
+    nanos: u64,
     expired: StaticWindowAndTimerId,
     pub fn initExpired(comptime window_id: zin.StaticWindowId, timer_id: window_id.getConfig().TimerId()) Timeout {
         return switch (window_id) {
@@ -1120,8 +1127,8 @@ const Timeout = union(enum) {
         };
     }
 };
-fn minTimeoutMs(maybe_previous: ?i32, ms: i32) i32 {
-    return @min(maybe_previous orelse return ms, ms);
+fn minTimeoutNanos(maybe_previous: ?u64, nanos: u64) u64 {
+    return @min(maybe_previous orelse return nanos, nanos);
 }
 fn resolveNow(maybe_now_ref: *?std.time.Instant) std.time.Instant {
     if (maybe_now_ref.* == null) {
@@ -1138,27 +1145,22 @@ fn debugPanic(comptime fmt: []const u8, args: anytype) void {
 }
 
 fn getTimerMinTimeout(maybe_now_ref: *?std.time.Instant) Timeout {
-    var maybe_min_ms: ?i32 = null;
+    var maybe_min_nanos: ?u64 = null;
     inline for (std.meta.fields(zin.StaticWindowId)) |field| {
         const window_id: zin.StaticWindowId = @enumFromInt(field.value);
         const timers = &global.staticWindowCustomState(window_id).timers;
         for (timers, 0..) |maybe_timer, timer_index| {
             const timer = maybe_timer orelse continue;
-            const diff_ns = resolveNow(maybe_now_ref).since(timer.start);
-            const diff_ms: i32 = @intFromFloat(@round(@as(f32, @floatFromInt(diff_ns)) / @as(f32, std.time.ns_per_ms)));
+            const diff_nanos: u64 = resolveNow(maybe_now_ref).since(timer.start);
             const TimerId = window_id.getConfig().TimerId();
-            const is_negative = diff_ms < 0;
-            if (is_negative) {
-                debugPanic("timer diff is negative? {}", .{diff_ms});
-            }
-            if (is_negative or diff_ms >= timer.duration_ms) {
+            if (diff_nanos >= timer.duration_nanos) {
                 timers[timer_index].?.start = maybe_now_ref.*.?;
                 return .initExpired(window_id, zin.timerIdFromInt(TimerId, timer_index));
             }
-            maybe_min_ms = minTimeoutMs(maybe_min_ms, @intCast(timer.duration_ms - @as(u32, @intCast(diff_ms))));
+            maybe_min_nanos = minTimeoutNanos(maybe_min_nanos, timer.duration_nanos - diff_nanos);
         }
     }
-    return if (maybe_min_ms) |min_ms| .{ .ms = min_ms } else .none;
+    return if (maybe_min_nanos) |nanos| .{ .nanos = nanos } else .none;
 }
 
 pub fn mainLoop() !void {
@@ -1175,16 +1177,16 @@ pub fn mainLoop() !void {
             var maybe_now: ?std.time.Instant = null;
             const expired = blk_expired: switch (getTimerMinTimeout(&maybe_now)) {
                 .none => {
-                    std.debug.assert(.ready == try pollSocketReader(&global.i.socket_reader, -1));
+                    std.debug.assert(.ready == try pollSocketReader(&global.i.socket_reader, null));
                     break;
                 },
-                .ms => |ms| switch (try pollSocketReader(&global.i.socket_reader, ms)) {
+                .nanos => |nanos| switch (try pollSocketReader(&global.i.socket_reader, nanos)) {
                     .ready => break,
                     .timeout => {
                         var new_now: ?std.time.Instant = null;
                         break :blk_expired switch (getTimerMinTimeout(&new_now)) {
                             .none => unreachable,
-                            .ms => unreachable,
+                            .nanos => unreachable,
                             .expired => |expired| expired,
                         };
                     },

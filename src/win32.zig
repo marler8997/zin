@@ -132,9 +132,12 @@ const Window = enum(usize) {
     pub fn invalidate(self: Window) void {
         win32.invalidateHwnd(self.asHwnd());
     }
-    pub fn startTimer(self: Window, id: usize, millis: u32) void {
+    pub fn startTimerMillis(self: Window, id: usize, millis: u32) void {
         if (0 == win32.SetTimer(self.asHwnd(), id, millis, null))
             win32.panicWin32("SetTimer", win32.GetLastError());
+    }
+    pub fn startTimerNanos(self: Window, id: usize, nanos: u64) void {
+        self.startTimerMillis(id, @divTrunc(nanos + (std.time.ns_per_ms - 1), std.time.ns_per_ms));
     }
 };
 
@@ -199,10 +202,16 @@ pub fn staticWindow(comptime window_id: zin.StaticWindowId) type {
         pub fn invalidate() void {
             global.static_windows[@intFromEnum(window_id)].?.invalidate();
         }
-        pub fn startTimer(id: window_id.getConfig().TimerId(), millis: u32) void {
-            global.static_windows[@intFromEnum(window_id)].?.startTimer(
+        pub fn startTimerMillis(id: window_id.getConfig().TimerId(), millis: u32) void {
+            global.static_windows[@intFromEnum(window_id)].?.startTimerMillis(
                 zin.intFromTimerId(usize, window_id.getConfig().TimerId(), id),
                 millis,
+            );
+        }
+        pub fn startTimerNanos(id: window_id.getConfig().TimerId(), nanos: u64) void {
+            global.static_windows[@intFromEnum(window_id)].?.startTimerNanos(
+                zin.intFromTimerId(usize, window_id.getConfig().TimerId(), id),
+                nanos,
             );
         }
     };

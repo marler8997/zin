@@ -145,9 +145,12 @@ pub fn staticWindow(window_id: zin.StaticWindowId) type {
             const view = global.static_windows[@intFromEnum(window_id)].?.contentView();
             return (AnyZinView{ .obj = view }).setNeedsDisplay(true);
         }
-        pub fn startTimer(id: window_id.getConfig().TimerId(), millis: u32) void {
+        pub fn startTimerMillis(id: window_id.getConfig().TimerId(), millis: u32) void {
+            startTimerNanos(id, std.time.ns_per_ms * @as(u64, millis));
+        }
+        pub fn startTimerNanos(id: window_id.getConfig().TimerId(), nanos: u64) void {
             const view = global.static_windows[@intFromEnum(window_id)].?.contentView();
-            const seconds = @as(f64, @floatFromInt(millis)) / 1000.0;
+            const seconds = @as(f64, @floatFromInt(nanos)) / std.time.ns_per_s;
             const id_int = zin.intFromTimerId(u32, window_id.getConfig().TimerId(), id);
             const timer = getClass("NSTimer").msgSend(objc.Object, "scheduledTimerWithTimeInterval:target:selector:userInfo:repeats:", .{
                 seconds,
