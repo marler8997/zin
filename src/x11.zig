@@ -192,7 +192,7 @@ pub const FixesExtension = struct {
                         .yes => true,
                         else => |v| {
                             log.err(
-                                "expected extension '{s}' present to be 0 or 1 but got {}",
+                                "expected extension '{f}' present to be 0 or 1 but got {}",
                                 .{ x11.fixes.name, v },
                             );
                             break :blk .{ .{ .resolved = null }, error.X11Protocol };
@@ -200,11 +200,11 @@ pub const FixesExtension = struct {
                     };
                     if (present) {
                         log.info(
-                            "extension '{s}': bases opcode={} event={} error={}",
+                            "extension '{f}': bases opcode={} event={} error={}",
                             .{ x11.fixes.name, ext.opcode_base, ext.event_base, ext.error_base },
                         );
                     } else {
-                        log.info("extension '{s}': not present", .{x11.fixes.name});
+                        log.info("extension '{f}': not present", .{x11.fixes.name});
                     }
                     break :blk .{
                         .{ .got_extension = ext.opcode_base },
@@ -216,7 +216,7 @@ pub const FixesExtension = struct {
                         .{ .resolved = null },
                         err,
                     };
-                    log.info("extension '{s}': version {}.{}", .{ x11.fixes.name, version.major, version.minor });
+                    log.info("extension '{f}': version {}.{}", .{ x11.fixes.name, version.major, version.minor });
                     break :blk .{ .{ .resolved = .{
                         .opcode_base = opcode_base,
                         .version = .{ .major = version.major, .minor = version.minor },
