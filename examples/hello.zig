@@ -123,9 +123,42 @@ fn callback(cb: zin.Callback(.{ .static = .main })) void {
 
             const rect_size = zin.scale(i32, 10, dpi_scale.x);
             d.rect(.ltwh(animate.x, size.y - animate.y, rect_size, rect_size), .red);
-            const margin_left = zin.scale(i32, 10, dpi_scale.x);
-            const top = zin.scale(i32, 50, dpi_scale.y);
-            d.text("Press 'n' to create a new window.", margin_left, top, .white);
+            const margin_x = zin.scale(i32, 10, dpi_scale.x);
+            const margin_y = zin.scale(i32, 10, dpi_scale.y);
+
+            const button_width = zin.scale(i32, 40, dpi_scale.x);
+            const button_height = zin.scale(i32, 20, dpi_scale.y);
+
+            const button_bottom = margin_y + button_height;
+
+            {
+                const button_rect: zin.Rect = .{
+                    .left = margin_x,
+                    .top = margin_y,
+                    .right = margin_x + button_width,
+                    .bottom = margin_y + button_height,
+                };
+                const has_mouse = if (global.mouse_position) |p| button_rect.contains(p) else false;
+                d.rect(button_rect, if (has_mouse) .shade(100) else .shade(150));
+                var str_buf: [100]u8 = undefined;
+                const str = std.fmt.bufPrint(&str_buf, "{},{} {},{}", .{
+                    button_rect.left,
+                    button_rect.top,
+                    button_rect.right,
+                    button_rect.bottom,
+                }) catch unreachable;
+                d.text(
+                    str,
+                    button_rect.right + zin.scale(i32, 10, dpi_scale.x),
+                    button_rect.top + @divTrunc(button_rect.bottom - button_rect.top, 2),
+                    .white,
+                );
+            }
+
+            const top = button_bottom + zin.scale(i32, 30, dpi_scale.y);
+            const line_height = zin.scale(i32, 20, dpi_scale.y);
+
+            d.text("Press 'n' to create a new window.", margin_x, top + line_height * 0, .white);
             {
                 var str_buf: [100]u8 = undefined;
                 const str = std.fmt.bufPrint(&str_buf, "Mouse left:{s} right:{s} middle:{s}", .{
@@ -133,11 +166,35 @@ fn callback(cb: zin.Callback(.{ .static = .main })) void {
                     if (global.mouse_down.right) "1" else "0",
                     if (global.mouse_down.middle) "1" else "0",
                 }) catch unreachable;
-                d.text(str, margin_left, top + zin.scale(i32, 20, dpi_scale.y), .white);
+                d.text(str, margin_x, top + line_height * 1, .white);
             }
+            {
+                var str_buf: [100]u8 = undefined;
+                const str = if (global.mouse_position) |p| std.fmt.bufPrint(&str_buf, "Mouse {}, {}", .{ p.x, p.y }) catch unreachable else "Mouse (none)";
+                d.text(str, margin_x, top + line_height * 2, .white);
+            }
+
             d.text("Weeee!!!", animate.x, animate.y, .white);
             if (global.mouse_position) |p| {
                 d.text("Mouse", p.x, p.y, .white);
+                d.rect(.{
+                    .left = p.x - 2,
+                    .top = p.y - 2,
+                    .right = p.x + 3,
+                    .bottom = p.y + 3,
+                }, .green);
+                d.rect(.{
+                    .left = p.x - 1,
+                    .top = p.y - 1,
+                    .right = p.x + 2,
+                    .bottom = p.y + 2,
+                }, .blue);
+                d.rect(.{
+                    .left = p.x,
+                    .top = p.y,
+                    .right = p.x + 1,
+                    .bottom = p.y + 1,
+                }, .red);
             }
         },
         .timer => zin.staticWindow(.main).invalidate(),
