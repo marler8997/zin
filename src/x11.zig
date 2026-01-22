@@ -921,7 +921,7 @@ fn createWindow(
     ) catch |e| return global.conn.?.teeWriteError(e);
 }
 
-fn clampFromI32(comptime T: type, i: i32) T {
+pub fn clampFromI32(comptime T: type, i: i32) T {
     if (i > std.math.maxInt(T)) return std.math.maxInt(T);
     if (i < std.math.minInt(T)) return std.math.minInt(T);
     return @intCast(i);
