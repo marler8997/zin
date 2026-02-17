@@ -163,7 +163,7 @@ pub fn staticWindow(comptime window_id: zin.StaticWindowId) type {
     return struct {
         const Self = @This();
 
-        pub fn hwnd() win32.HWND {
+        pub fn handle() win32.HWND {
             return global.static_windows[@intFromEnum(window_id)].?.asHwnd();
         }
 
