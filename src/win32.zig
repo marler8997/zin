@@ -179,13 +179,14 @@ pub fn staticWindow(comptime window_id: zin.StaticWindowId) type {
         }
         pub fn create(opt: zin.CreateWindowOptions) zin.CreateWindowError!void {
             std.debug.assert(global.static_windows[@intFromEnum(window_id)] == null);
-            global.static_windows[@intFromEnum(window_id)] = windowFromHwnd(try createWindow(
+            const hwnd = try createWindow(
                 global.static_classes[@intFromEnum(window_id)] orelse zin.debugPanicOrUnreachable(
                     "registerClass was not called for static window '{s}'",
                     .{@tagName(window_id)},
                 ),
                 &opt,
-            ));
+            );
+            std.debug.assert(global.static_windows[@intFromEnum(window_id)] == windowFromHwnd(hwnd));
         }
         pub fn destroy() void {
             global.static_windows[@intFromEnum(window_id)].?.destroy();
@@ -590,6 +591,26 @@ fn makeWndProc(
             // }
 
             switch (msg) {
+                win32.WM_CREATE => {
+                    switch (config) {
+                        .static => |window_id| {
+                            std.debug.assert(null == global.static_windows[@intFromEnum(window_id)]);
+                            global.static_windows[@intFromEnum(window_id)] = windowFromHwnd(hwnd);
+                        },
+                        .dynamic => {},
+                    }
+                    return 0;
+                },
+                win32.WM_DESTROY => {
+                    switch (config) {
+                        .static => |window_id| {
+                            std.debug.assert(windowFromHwnd(hwnd) == global.static_windows[@intFromEnum(window_id)]);
+                            global.static_windows[@intFromEnum(window_id)] = null;
+                        },
+                        .dynamic => {},
+                    }
+                    return 0;
+                },
                 win32.WM_ERASEBKGND => {
                     // TODO: we might want to call fill rect here in certain circumstances
                     return 0;
