@@ -342,8 +342,8 @@ pub fn processInit(opt: zin.ProcessInitOptions) zin.ProcessInitError!void {
 
 pub const ConnectError = union(enum) {
     connect_error: x11.ConnectError,
-    recv_error: (error{EndOfStream} || x11.SocketReader.Error),
-    send_error: x11.SocketWriter.Error,
+    recv_error: (error{EndOfStream} || x11.Stream.Reader.Error),
+    send_error: x11.Stream.Writer.Error,
     protocol_error: enum { setup, setup_dynamic, depth, keycode_range, unexpected_msg },
     cant_authenticate,
     no_screen,
@@ -555,10 +555,10 @@ pub const global = struct {
     // all decls in the i namespace are guaranteed to be initialized while conn
     // is not null (after a successfull call to connect).
     pub const i = struct {
-        pub var socket_reader: x11.SocketReader = undefined;
+        pub var socket_reader: x11.Stream.Reader = undefined;
         pub var setup: x11.Setup = undefined;
         pub var screen: x11.ScreenHeader = undefined;
-        pub var socket_writer: x11.SocketWriter = undefined;
+        pub var socket_writer: x11.Stream.Writer = undefined;
     };
 
     var static_callbacks: [static_window_count]?*const anyopaque = @splat(null);
@@ -687,13 +687,13 @@ pub fn x11Socket() std.posix.socket_t {
 }
 /// Access the global socket writer.
 /// This should only be called while connected (after a successfull call to connect).
-pub fn x11SocketWriter() *x11.SocketWriter {
+pub fn x11SocketWriter() *x11.Stream.Writer {
     std.debug.assert(global.conn != null);
     return &global.i.socket_writer;
 }
 /// Access the global socket reader.
 /// This should only be called while connected (after a successfull call to connect).
-pub fn x11SocketReader() *x11.SocketReader {
+pub fn x11SocketReader() *x11.Stream.Reader {
     std.debug.assert(global.conn != null);
     return &global.i.socket_reader;
 }
@@ -1097,7 +1097,7 @@ pub fn x11UpdateWindows() error{WriteFailed}!usize {
     return update_count;
 }
 
-fn pollSocketReader(socket_reader: *x11.SocketReader, timeout_nanos: ?u64) !enum { ready, timeout } {
+fn pollSocketReader(socket_reader: *x11.Stream.Reader, timeout_nanos: ?u64) !enum { ready, timeout } {
     if (socket_reader.interface().bufferedLen() > 0) return .ready;
     var poll_fds = [_]std.posix.pollfd{
         .{
