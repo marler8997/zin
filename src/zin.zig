@@ -472,9 +472,38 @@ pub fn WindowClassDefinition(window_config: WindowConfig) type {
     };
 }
 
+pub const HWND = switch (builtin.os.tag) {
+    .windows => platform.win32.HWND,
+    else => *anyopaque,
+};
+pub const WPARAM = switch (builtin.os.tag) {
+    .windows => platform.win32.WPARAM,
+    else => *anyopaque,
+};
+pub const LPARAM = switch (builtin.os.tag) {
+    .windows => platform.win32.LPARAM,
+    else => *anyopaque,
+};
+pub const LRESULT = switch (builtin.os.tag) {
+    .windows => platform.win32.LRESULT,
+    else => *anyopaque,
+};
+const MaybeWndProc = switch (builtin.os.tag) {
+    .windows => ?*const fn (
+        hwnd: HWND,
+        msg: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) callconv(.winapi) LRESULT,
+    else => void,
+};
 pub const WindowClassRuntimeConfig = struct {
     win32_icon_large: MaybeWin32Icon,
     win32_icon_small: MaybeWin32Icon,
+    win32_wndproc: MaybeWndProc = switch (builtin.os.tag) {
+        .windows => null,
+        else => {},
+    },
 
     pub const win32_no_icons: WindowClassRuntimeConfig = .{
         .win32_icon_large = .none,

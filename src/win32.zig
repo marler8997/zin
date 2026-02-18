@@ -87,7 +87,7 @@ fn registerWindowClass(
         //       enabling them will change how window events are sent
         // .DBLCLKS = 1
         .style = .{ .VREDRAW = 1, .HREDRAW = 1 },
-        .lpfnWndProc = makeWndProc(window_config, def),
+        .lpfnWndProc = if (runtime_config.win32_wndproc) |proc| proc else makeWndProc(window_config, def),
         .cbClsExtra = 0,
         .cbWndExtra = 0,
         .hInstance = win32.GetModuleHandleW(null),
@@ -565,7 +565,7 @@ fn mouseDownFromWparam(wparam: win32.WPARAM) zin.MouseButtonsDown {
 }
 
 const WndProc = fn (win32.HWND, u32, win32.WPARAM, win32.LPARAM) callconv(.winapi) win32.LRESULT;
-fn makeWndProc(
+pub fn makeWndProc(
     config: zin.WindowConfig,
     class: zin.WindowClassDefinition(config),
 ) WndProc {

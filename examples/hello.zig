@@ -12,6 +12,7 @@ pub const zin_config: zin.Config = .{
 };
 const StaticWindowId = enum {
     main,
+    testWin32,
     pub fn getConfig(self: StaticWindowId) zin.WindowConfigData {
         return switch (self) {
             .main => .{
@@ -23,6 +24,16 @@ const StaticWindowId = enum {
                 .dynamic_background = false,
                 .win32 = .{ .render = .{ .gdi = .{} } },
                 .x11 = .{ .render_kind = .double_buffered },
+            },
+            .testWin32 => .{
+                .window_size_events = true,
+                .key_events = false,
+                .mouse_events = false,
+                .timers = .none,
+                .background = .{ .r = 49, .g = 49, .b = 49 },
+                .dynamic_background = false,
+                .win32 = .{ .render = .{ .gdi = .{} } },
+                .x11 = .{ .render_kind = .immediate },
             },
         };
     }
@@ -51,6 +62,13 @@ const global = struct {
         .right = false,
         .middle = false,
     };
+    var test_win32_created: bool = false;
+};
+
+const test_win32_class: zin.WindowClassDefinition(.{ .static = .testWin32 }) = .{
+    .callback = testWin32Callback,
+    .win32_name = zin.L("TestWin32Window"),
+    .macos_view = "TestWin32View",
 };
 
 pub fn main() !void {
@@ -74,6 +92,15 @@ pub fn main() !void {
         .win32_icon_small = icons.small,
     });
     defer zin.staticWindow(.main).unregisterClass();
+    zin.staticWindow(.testWin32).registerClass(test_win32_class, .{
+        .win32_icon_large = icons.large,
+        .win32_icon_small = icons.small,
+        .win32_wndproc = switch (builtin.os.tag) {
+            .windows => &testWin32Wndproc,
+            else => {},
+        },
+    });
+    defer zin.staticWindow(.testWin32).unregisterClass();
 
     try zin.staticWindow(.main).create(.{
         .title = "Hello Example",
@@ -83,6 +110,15 @@ pub fn main() !void {
     defer zin.staticWindow(.main).destroy();
     zin.staticWindow(.main).show();
     zin.staticWindow(.main).startTimerMillis({}, 14);
+
+    try zin.staticWindow(.testWin32).create(.{
+        .title = "Test Win32",
+        .size = .{ .client_points = .{ .x = 300, .y = 200 } },
+        .pos = null,
+    });
+    global.test_win32_created = true;
+    defer if (global.test_win32_created) zin.staticWindow(.testWin32).destroy();
+    zin.staticWindow(.testWin32).show();
 
     try zin.mainLoop();
 }
@@ -170,6 +206,35 @@ fn callback(cb: zin.Callback(.{ .static = .main })) void {
             global.mouse_position = mouse.position;
             global.mouse_down = mouse.down;
             zin.staticWindow(.main).invalidate();
+        },
+    }
+}
+
+fn testWin32Wndproc(
+    hwnd: zin.HWND,
+    msg: u32,
+    wparam: zin.WPARAM,
+    lparam: zin.LPARAM,
+) callconv(.winapi) zin.LRESULT {
+    std.log.info("TestWin32: msg={} wparam={} lparam={}", .{ msg, lparam, wparam });
+    return zin.platform.makeWndProc(.{ .static = .testWin32 }, test_win32_class)(
+        hwnd,
+        msg,
+        wparam,
+        lparam,
+    );
+}
+
+fn testWin32Callback(cb: zin.Callback(.{ .static = .testWin32 })) void {
+    switch (cb) {
+        .close => {
+            zin.staticWindow(.testWin32).destroy();
+            global.test_win32_created = false;
+        },
+        .window_size => {},
+        .draw => |d| {
+            d.clear();
+            d.text("Test Win32 Window", 10, 10, .red);
         },
     }
 }

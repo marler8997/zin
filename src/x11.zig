@@ -661,7 +661,7 @@ const StaticWindowAndTimerId = blk: {
         field.* = .{
             .name = window_id_field.name,
             .type = TimerId,
-            .alignment = if (TimerId == noreturn) 0 else @alignOf(TimerId),
+            .alignment = if (TimerId == noreturn) 1 else @alignOf(TimerId),
         };
     }
     break :blk @Type(std.builtin.Type{
