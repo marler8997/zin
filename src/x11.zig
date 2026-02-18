@@ -1163,25 +1163,60 @@ fn getTimerMinTimeout(maybe_now_ref: *?std.time.Instant) Timeout {
     return if (maybe_min_nanos) |nanos| .{ .nanos = nanos } else .none;
 }
 
-pub fn mainLoop() !void {
-    while (true) {
-        // we prioritize socket messages over timeout, so we only start checking the
-        // timeout if the socket has no messages
-        while (true) {
-            _ = try x11UpdateWindows();
-            try global.conn.?.sink.writer.flush();
-            switch (try pollSocketReader(&global.i.socket_reader, 0)) {
-                .ready => break,
-                .timeout => {},
-            }
-            var maybe_now: ?std.time.Instant = null;
-            const expired = blk_expired: switch (getTimerMinTimeout(&maybe_now)) {
-                .none => {
-                    std.debug.assert(.ready == try pollSocketReader(&global.i.socket_reader, null));
-                    break;
+fn drainSocket() !enum { end_of_stream, handled_messages, no_messages } {
+    var handled_message: bool = false;
+    while (true) switch (try pollSocketReader(&global.i.socket_reader, 0)) {
+        .ready => {
+            const msg_kind = global.conn.?.source.readKind() catch |err| return switch (err) {
+                error.EndOfStream => {
+                    log.info("X11 connection closed (EndOfStream)", .{});
+                    return .end_of_stream;
                 },
-                .nanos => |nanos| switch (try pollSocketReader(&global.i.socket_reader, nanos)) {
-                    .ready => break,
+                else => |e| switch (global.i.socket_reader.getError() orelse e) {
+                    error.ConnectionResetByPeer => {
+                        log.info("X11 connection closed (ConnectionReset)", .{});
+                        return .end_of_stream;
+                    },
+                    else => |e2| e2,
+                },
+            };
+            try x11HandleMessage(&global.conn.?.source, msg_kind);
+            handled_message = true;
+        },
+        .timeout => return if (handled_message) .handled_messages else .no_messages,
+    };
+}
+
+pub fn mainLoop() !void {
+    var check_windows: bool = true;
+    while (true) {
+        try global.conn.?.sink.writer.flush();
+
+        switch (try drainSocket()) {
+            .end_of_stream => return,
+            .handled_messages => check_windows = true,
+            .no_messages => {},
+        }
+
+        var maybe_now: ?std.time.Instant = null;
+        const timer: union(enum) {
+            expired: StaticWindowAndTimerId,
+            wait_nanos: ?u64,
+        } = switch (getTimerMinTimeout(&maybe_now)) {
+            .none => .{ .wait_nanos = null },
+            .nanos => |nanos| .{ .wait_nanos = nanos },
+            .expired => |expired| .{ .expired = expired },
+        };
+
+        const expired: StaticWindowAndTimerId = blk_expired: switch (timer) {
+            .wait_nanos => |timeout_nanos| {
+                if (check_windows) {
+                    _ = try x11UpdateWindows();
+                    check_windows = false;
+                    continue;
+                }
+                switch (try pollSocketReader(&global.i.socket_reader, timeout_nanos)) {
+                    .ready => continue,
                     .timeout => {
                         var new_now: ?std.time.Instant = null;
                         break :blk_expired switch (getTimerMinTimeout(&new_now)) {
@@ -1190,35 +1225,20 @@ pub fn mainLoop() !void {
                             .expired => |expired| expired,
                         };
                     },
-                },
-                .expired => |expired| break :blk_expired expired,
-            };
-
-            switch (expired) {
-                inline else => |timer_id, window_id| switch (@typeInfo(@TypeOf(timer_id))) {
-                    .void => staticCallback(window_id)(.{ .timer = {} }),
-                    .@"enum" => {
-                        @panic("todo");
-                    },
-                    else => |TimerId| @compileError("todo: handle TimerId type: " ++ @tagName(TimerId)),
-                },
-            }
-        }
-
-        const msg_kind = global.conn.?.source.readKind() catch |err| return switch (err) {
-            error.EndOfStream => {
-                log.info("X11 connection closed (EndOfStream)", .{});
-                return;
+                }
             },
-            else => |e| switch (global.i.socket_reader.getError() orelse e) {
-                error.ConnectionResetByPeer => {
-                    log.info("X11 connection closed (ConnectionReset)", .{});
-                    return;
-                },
-                else => |e2| e2,
-            },
+            .expired => |expired| expired,
         };
-        try x11HandleMessage(&global.conn.?.source, msg_kind);
+        switch (expired) {
+            inline else => |timer_id, window_id| switch (@typeInfo(@TypeOf(timer_id))) {
+                .void => staticCallback(window_id)(.{ .timer = {} }),
+                .@"enum" => {
+                    @panic("todo");
+                },
+                else => |TimerId| @compileError("todo: handle TimerId type: " ++ @tagName(TimerId)),
+            },
+        }
+        check_windows = true;
     }
 }
 pub fn quitMainLoop() void {
@@ -1416,9 +1436,9 @@ pub fn x11HandleMessage(source: *x11.Source, msg_kind: x11.ServerMsgKind) !void 
         .Expose => {
             const expose = try source.read2(.Expose);
             if (global.conn.?.staticWindowFromX11Id(expose.window)) |w| switch (w) {
-                inline else => |window_id| switch (try drawStaticWindow(window_id)) {
-                    .not_created => {}, // ok means we destroyed this window
-                    .success => {},
+                inline else => |window_id| switch (global.static_window_common_states[@intFromEnum(window_id)]) {
+                    .not_created => {},
+                    .created => |*created| created.damaged = true,
                 },
             } else @panic("todo: expose on dynamic windows");
         },
