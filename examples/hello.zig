@@ -19,6 +19,7 @@ const StaticWindowId = enum {
                 .window_size_events = true,
                 .key_events = true,
                 .mouse_events = true,
+                .dpi_events = true,
                 .timers = .one,
                 .background = .{ .r = 49, .g = 49, .b = 49 },
                 .dynamic_background = false,
@@ -29,6 +30,7 @@ const StaticWindowId = enum {
                 .window_size_events = true,
                 .key_events = false,
                 .mouse_events = false,
+                .dpi_events = false,
                 .timers = .none,
                 .background = .{ .r = 49, .g = 49, .b = 49 },
                 .dynamic_background = false,
@@ -45,6 +47,7 @@ const extra_config: zin.WindowConfigData = .{
     .window_size_events = false,
     .key_events = false,
     .mouse_events = false,
+    .dpi_events = false,
     .timers = .none,
     .background = .{ .r = 255, .g = 0, .b = 0 },
     .dynamic_background = true,
@@ -205,6 +208,10 @@ fn callback(cb: zin.Callback(.{ .static = .main })) void {
         .mouse => |mouse| {
             global.mouse_position = mouse.position;
             global.mouse_down = mouse.down;
+            zin.staticWindow(.main).invalidate();
+        },
+        .dpi_change => {
+            std.log.info("DPI change", .{});
             zin.staticWindow(.main).invalidate();
         },
     }

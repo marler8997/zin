@@ -668,6 +668,25 @@ pub fn makeWndProc(
                     }
                     return 0;
                 },
+                win32.WM_DPICHANGED => {
+                    const rect: *const win32.RECT = @ptrFromInt(@as(usize, @bitCast(lparam)));
+                    if (0 == win32.SetWindowPos(
+                        hwnd,
+                        null,
+                        rect.left,
+                        rect.top,
+                        rect.right - rect.left,
+                        rect.bottom - rect.top,
+                        .{ .NOACTIVATE = 1, .NOZORDER = 1 },
+                    )) win32.panicWin32("SetWindowPos", win32.GetLastError());
+                    if (comptime config.data().dpi_events) {
+                        switch (config) {
+                            .static => class.callback(.{ .dpi_change = {} }),
+                            .dynamic => class.callback(windowFromHwnd(hwnd), .{ .dpi_change = {} }),
+                        }
+                    }
+                    return 0;
+                },
                 win32.WM_MENUCHAR => {
                     // Return MAKELRESULT(0, MNC_CLOSE) to close menu and prevent beep
                     return 0 | (@as(win32.LRESULT, 1) << 16); // MNC_CLOSE = 1

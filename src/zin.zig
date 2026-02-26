@@ -371,6 +371,7 @@ pub const WindowConfigData = struct {
         one,
         type: type,
     },
+    dpi_events: bool,
     background: Rgb8,
     dynamic_background: bool,
     win32: win32.WindowConfig,
@@ -433,7 +434,9 @@ pub fn Callback(window_config: WindowConfig) type {
             .none => [_]Field{},
             .one => [_]Field{.{ .name = "timer", .type = void }},
             .type => |t| [_]Field{.{ .name = "timer", .type = t }},
-        }) ++ (if (window_config.data().win32.set_cursor_callback) [_]Field{
+        }) ++ (if (window_config.data().dpi_events) [_]Field{
+            .{ .name = "dpi_change", .type = void },
+        } else [_]Field{}) ++ (if (window_config.data().win32.set_cursor_callback) [_]Field{
             .{ .name = "win32_set_cursor", .type = struct { result_ref: *isize, wparam: usize, lparam: isize } },
         } else [_]Field{})),
     );

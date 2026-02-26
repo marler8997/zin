@@ -240,6 +240,8 @@ pub const Connection = struct {
     next_id_offset: u32 = 0,
     dbe: Extension = .{ .name = x11.dbe.name, .state = .not_queried },
 
+    dpi_get_property_sequence: ?u16 = null,
+
     write_error: ?error{WriteFailed},
     pub fn setWriteError(conn: *Connection, e: error{WriteFailed}) void {
         std.debug.assert(conn.write_error == null);
@@ -465,6 +467,18 @@ pub fn connect(out_err: *ConnectError) error{X11Connect}!void {
         .keymap = keymap,
         .write_error = null,
     };
+
+    if (support_dpi_events) {
+        // Select PropertyChange events on the root window so we get PropertyNotify
+        // when RESOURCE_MANAGER changes (e.g. via xrdb).
+        global.conn.?.sink.ChangeWindowAttributes(global.i.screen.root, .{
+            .event_mask = .{ .PropertyChange = 1 },
+        }) catch return out_err.set(.{ .send_error = global.i.socket_writer.err orelse error.Unexpected });
+        // Send initial GetProperty for RESOURCE_MANAGER to read Xft.dpi
+        global.conn.?.dpi_get_property_sequence = sendDpiGetProperty(&global.conn.?.sink) catch
+            return out_err.set(.{ .send_error = global.i.socket_writer.err orelse error.Unexpected });
+    }
+
     global.onConnected();
 }
 pub fn disconnect() void {
@@ -486,9 +500,41 @@ fn dpiScaleFromPixelMm(pixels: u16, millimeters: u16) f32 {
     return @as(f32, @floatFromInt(pixels)) * mm_per_inch / 96.0 / @as(f32, @floatFromInt(millimeters));
 }
 
+fn parseXftDpi(data: []const u8) ?f32 {
+    var it = std.mem.splitScalar(u8, data, '\n');
+    while (it.next()) |line| {
+        const trimmed = std.mem.trimLeft(u8, line, " \t");
+        const prefix = "Xft.dpi:";
+        if (std.mem.startsWith(u8, trimmed, prefix)) {
+            const value_str = std.mem.trimLeft(u8, trimmed[prefix.len..], " \t");
+            return std.fmt.parseFloat(f32, value_str) catch null;
+        }
+    }
+    return null;
+}
+
+fn sendDpiGetProperty(sink: *x11.RequestSink) error{WriteFailed}!u16 {
+    try sink.GetProperty(global.i.screen.root, .{
+        .property = .RESOURCE_MANAGER,
+        .type = .STRING,
+        .offset = 0,
+        .len = 1024 * 1024, // up to 4MB
+        .delete = false,
+    });
+    return sink.sequence;
+}
+
 // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 // TODO: this shouldn't be hardcoded, instead, it should be based on the app config
 const support_key_events = true;
+
+const support_dpi_events: bool = blk: {
+    for (0..@typeInfo(zin.StaticWindowId).@"enum".fields.len) |window_id_int| {
+        const id: zin.StaticWindowId = @enumFromInt(window_id_int);
+        if (id.getConfig().dpi_events) break :blk true;
+    }
+    break :blk false;
+};
 
 pub fn registerDynamicWindowClass(
     comptime config: zin.WindowConfigData,
@@ -1302,6 +1348,39 @@ pub fn x11HandleMessage(source: *x11.Source, msg_kind: x11.ServerMsgKind) !void 
                 }
             }
 
+            if (support_dpi_events) {
+                if (global.conn.?.dpi_get_property_sequence) |seq| {
+                    if (reply.sequence == seq) {
+                        global.conn.?.dpi_get_property_sequence = null;
+                        // Read the GetProperty reply header
+                        const value_format = reply.flexible; // format: 0, 8, 16, or 32
+                        const prop_header = try source.read3Header(.GetProperty);
+                        if (value_format == 8 and prop_header.value_size_in_format_units > 0) {
+                            const value_len: u35 = prop_header.value_size_in_format_units;
+                            const data = try source.takeReply(value_len);
+                            if (parseXftDpi(data)) |xft_dpi| {
+                                const scale = xft_dpi / 96.0;
+                                log.debug("Xft.dpi={d:.2} scale={d:.2}", .{ xft_dpi, scale });
+                                const old_x = global.conn.?.dpi_scale_x;
+                                const old_y = global.conn.?.dpi_scale_y;
+                                global.conn.?.dpi_scale_x = scale;
+                                global.conn.?.dpi_scale_y = scale;
+                                if (old_x != scale or old_y != scale) {
+                                    inline for (0..static_window_count) |window_id_int| {
+                                        const window_id: zin.StaticWindowId = @enumFromInt(window_id_int);
+                                        if (window_id.getConfig().dpi_events) {
+                                            staticCallback(window_id)(.dpi_change);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        try source.discardRemaining();
+                        return;
+                    }
+                }
+            }
+
             if (zin.config.x11_on_unhandled_reply) |func| {
                 try func(reply.flexible, reply.sequence, reply.word_count);
                 const new_remaining = source.replyRemainingSize();
@@ -1474,6 +1553,19 @@ pub fn x11HandleMessage(source: *x11.Source, msg_kind: x11.ServerMsgKind) !void 
                     }
                 },
             } else @panic("todo: configure_notify on dynamic windows");
+        },
+        .PropertyNotify => {
+            const event = try source.read2(.PropertyNotify);
+            if (support_dpi_events) {
+                if (@intFromEnum(event.window) == @intFromEnum(global.i.screen.root) and event.atom == .RESOURCE_MANAGER) {
+                    global.conn.?.dpi_get_property_sequence = sendDpiGetProperty(&global.conn.?.sink) catch |e| {
+                        global.conn.?.setWriteError(e);
+                        return e;
+                    };
+                    return;
+                }
+            }
+            log.debug("ignoring PropertyNotify: window={any} atom={any}", .{ event.window, event.atom });
         },
         // .generic_extension_event => |msg| std.debug.panic("unexpected generic_extension_event {}", .{msg}),
         else => {

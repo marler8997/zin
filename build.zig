@@ -87,9 +87,11 @@ fn addExample(
     });
 
     const install = b.addInstallArtifact(exe, .{});
+    b.step(b.fmt("install-{s}", .{name}), "").dependOn(&install.step);
     examples_step.dependOn(&install.step);
 
     const run = b.addRunArtifact(exe);
+    run.step.dependOn(&install.step);
     if (b.args) |a| run.addArgs(a);
     b.step(name, "").dependOn(&run.step);
 }

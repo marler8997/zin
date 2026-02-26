@@ -456,10 +456,11 @@ pub fn Draw(window_config: zin.WindowConfig) type {
         const Self = @This();
         ctx: *c.CGContext,
         client_size: zin.XY,
+        window: NSWindow,
 
         pub fn getDpiScale(self: *const Self) struct { x: f32, y: f32 } {
-            _ = self;
-            return .{ .x = 1, .y = 1 }; // todo
+            const scale: f32 = @floatCast(self.window.obj.msgSend(f64, "backingScaleFactor", .{}));
+            return .{ .x = scale, .y = scale };
         }
 
         pub fn clear(self: *const Self) void {
@@ -619,6 +620,11 @@ fn ZinView(
                 },
             }
 
+            if (config.data().dpi_events) {
+                if (!class.addMethod("windowDidChangeBackingProperties:", windowDidChangeBackingProperties))
+                    @panic("addMethod windowDidChangeBackingProperties failed");
+            }
+
             objc.registerClassPair(class);
 
             const obj = class.msgSend(objc.Object, "alloc", .{});
@@ -682,6 +688,16 @@ fn ZinView(
                 self.obj.msgSend(void, "addTrackingArea:", .{tracking_area});
                 _ = w.obj.msgSend(void, "setAcceptsMouseMovedEvents:", .{true});
             }
+
+            if (config.data().dpi_events) {
+                // Register for DPI/backing scale factor changes
+                _ = notification_center.msgSend(void, "addObserver:selector:name:object:", .{
+                    self.obj,
+                    objc.sel("windowDidChangeBackingProperties:"),
+                    NSString.stringWithUTF8String("NSWindowDidChangeBackingPropertiesNotification").obj,
+                    w,
+                });
+            }
         }
         fn windowShouldClose(object_id: objc.c.id, sel: objc.c.SEL, sender: objc.c.id) callconv(.c) bool {
             _ = sel;
@@ -699,6 +715,17 @@ fn ZinView(
             _ = sel;
             _ = notification;
             std.debug.panic("TODO: windowWillClose", .{});
+        }
+
+        fn windowDidChangeBackingProperties(object_id: objc.c.id, sel: objc.c.SEL, notification: objc.c.id) callconv(.c) void {
+            _ = sel;
+            _ = notification;
+            const self: Self = .{ .obj = .{ .value = object_id } };
+            _ = self;
+            switch (config) {
+                .static => classdef.callback(.dpi_change),
+                .dynamic => @panic("todo"),
+            }
         }
 
         fn handleTimer(object_id: objc.c.id, sel: objc.c.SEL, timer_obj_id: objc.c.id) callconv(.c) void {
@@ -734,6 +761,7 @@ fn ZinView(
                     .draw = .{
                         .ctx = ctx,
                         .client_size = self.any().getClientSize(),
+                        .window = self.window(),
                     },
                 }),
                 .dynamic => @panic("todo"),
