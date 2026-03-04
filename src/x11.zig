@@ -231,9 +231,8 @@ pub const FixesExtension = struct {
 pub const Connection = struct {
     sink: x11.RequestSink,
     source: x11.Source,
-    dpi_scale_x: f32,
-    dpi_scale_y: f32,
     depth: x11.Depth,
+    dpi_scale: DpiScale,
 
     keymap: if (support_key_events) x11.keymap.Full else void,
     // TODO: we'll need some better mechanism for ids so we can't run out
@@ -346,13 +345,20 @@ pub const ConnectError = union(enum) {
     connect_error: x11.ConnectError,
     recv_error: (error{EndOfStream} || x11.Stream.Reader.Error),
     send_error: x11.Stream.Writer.Error,
-    protocol_error: enum { setup, setup_dynamic, depth, keycode_range, unexpected_msg },
+    protocol_error: enum { setup, setup_dynamic, depth, read_dpi, discard_dpi, keycode_range, unexpected_msg },
     cant_authenticate,
     no_screen,
 
     fn set(err: *ConnectError, value: ConnectError) error{X11Connect} {
         err.* = value;
         return error.X11Connect;
+    }
+
+    fn setRecv(err: *ConnectError, recv_err: error{ ReadFailed, EndOfStream }) error{X11Connect} {
+        return err.set(.{ .recv_error = switch (recv_err) {
+            error.ReadFailed => global.i.socket_reader.getError() orelse error.Unexpected,
+            error.EndOfStream => error.EndOfStream,
+        } });
     }
 
     pub const format = if (zig_atleast_15) formatNew else formatLegacy;
@@ -412,32 +418,43 @@ pub fn connect(out_err: *ConnectError) error{X11Connect}!void {
     errdefer x11.disconnect(global.i.socket_reader.getStream());
 
     global.i.setup = x11.readSetupSuccess(global.i.socket_reader.interface()) catch |err| switch (err) {
-        error.ReadFailed => return out_err.set(.{
-            .recv_error = global.i.socket_reader.getError() orelse error.Unexpected,
-        }),
-        error.EndOfStream => return out_err.set(.{ .recv_error = error.EndOfStream }),
         error.X11Protocol => return out_err.set(.{ .protocol_error = .setup }),
+        error.ReadFailed, error.EndOfStream => |e| return out_err.setRecv(e),
     };
     std.log.info("setup reply {f}", .{global.i.setup});
     var source: x11.Source = .initFinishSetup(global.i.socket_reader.interface(), &global.i.setup);
     global.i.screen = (x11.draft.readSetupDynamic(&source, &global.i.setup, .{
         .on_visual = if (zin.config.x11_on_visual) |f| &f else null,
     }) catch |err| switch (err) {
-        error.ReadFailed => return out_err.set(.{
-            .recv_error = global.i.socket_reader.getError() orelse error.Unexpected,
-        }),
-        error.EndOfStream => return out_err.set(.{ .recv_error = error.EndOfStream }),
         error.X11Protocol => return out_err.set(.{ .protocol_error = .setup_dynamic }),
+        error.ReadFailed, error.EndOfStream => |e| return out_err.setRecv(e),
     }) orelse return out_err.set(.no_screen);
     global.i.socket_writer = x11.socketWriter(global.i.socket_reader.getStream(), &global.write_buffer);
     var sink: x11.RequestSink = .{ .writer = &global.i.socket_writer.interface };
 
-    const dpi_scale_x = dpiScaleFromPixelMm(global.i.screen.pixel_width, global.i.screen.mm_width);
-    const dpi_scale_y = dpiScaleFromPixelMm(global.i.screen.pixel_height, global.i.screen.mm_height);
-    log.debug("DPI {d:.2}x{d:.2}", .{ dpi_scale_x, dpi_scale_y });
     const depth = x11.Depth.init(global.i.screen.root_depth) orelse {
         log.err("unsupported screen depth {}", .{global.i.screen.root_depth});
         return out_err.set(.{ .protocol_error = .depth });
+    };
+
+    const dpi_scale: DpiScale = blk: {
+        if (!support_dpi_events) break :blk .{ .val = {} };
+        const seq = sendDpiGetProperty(&sink) catch return out_err.set(
+            .{ .send_error = global.i.socket_writer.err orelse error.Unexpected },
+        );
+        sink.writer.flush() catch return out_err.set(
+            .{ .send_error = global.i.socket_writer.err orelse error.Unexpected },
+        );
+        const reply = source.readSynchronousReply1(seq) catch |err| return switch (err) {
+            error.X11Protocol => out_err.set(.{ .protocol_error = .read_dpi }),
+            error.UnexpectedMessage => out_err.set(.{ .protocol_error = .unexpected_msg }),
+            error.ReadFailed, error.EndOfStream => |e| out_err.setRecv(e),
+        };
+        const dpi_scale_val = readDpiFromPropertyReply(&source, reply.flexible) catch |err| return switch (err) {
+            error.X11Protocol => out_err.set(.{ .protocol_error = .discard_dpi }),
+            error.ReadFailed, error.EndOfStream => |e| out_err.setRecv(e),
+        };
+        break :blk .{ .val = dpi_scale_val orelse 1.0 };
     };
 
     const keymap: if (support_key_events) x11.keymap.Full else void = blk: {
@@ -450,20 +467,16 @@ pub fn connect(out_err: *ConnectError) error{X11Connect}!void {
         // TODO: should the initSynchronous function take the keymap by reference instead
         break :blk x11.keymap.Full.initSynchronous(&sink, &source, keyrange) catch |err| return switch (err) {
             error.WriteFailed => return out_err.set(.{ .send_error = global.i.socket_writer.err orelse error.Unexpected }),
-            error.ReadFailed => return out_err.set(.{
-                .recv_error = global.i.socket_reader.getError() orelse error.Unexpected,
-            }),
-            error.EndOfStream => return out_err.set(.{ .recv_error = error.EndOfStream }),
             error.X11Protocol => return out_err.set(.{ .protocol_error = .setup_dynamic }),
             error.UnexpectedMessage => return out_err.set(.{ .protocol_error = .unexpected_msg }),
+            error.ReadFailed, error.EndOfStream => |e| return out_err.setRecv(e),
         };
     };
     global.conn = .{
         .sink = sink,
         .source = source,
-        .dpi_scale_x = dpi_scale_x,
-        .dpi_scale_y = dpi_scale_y,
         .depth = depth,
+        .dpi_scale = dpi_scale,
         .keymap = keymap,
         .write_error = null,
     };
@@ -495,22 +508,44 @@ pub fn disconnect() void {
     global.i.socket_reader = undefined;
 }
 
-fn dpiScaleFromPixelMm(pixels: u16, millimeters: u16) f32 {
-    const mm_per_inch = 25.4;
-    return @as(f32, @floatFromInt(pixels)) * mm_per_inch / 96.0 / @as(f32, @floatFromInt(millimeters));
-}
-
+const xft_dpi_prefix = "Xft.dpi:";
 fn parseXftDpi(data: []const u8) ?f32 {
     var it = std.mem.splitScalar(u8, data, '\n');
     while (it.next()) |line| {
         const trimmed = std.mem.trimLeft(u8, line, " \t");
-        const prefix = "Xft.dpi:";
-        if (std.mem.startsWith(u8, trimmed, prefix)) {
-            const value_str = std.mem.trimLeft(u8, trimmed[prefix.len..], " \t");
+        if (std.mem.startsWith(u8, trimmed, xft_dpi_prefix)) {
+            const value_str = std.mem.trimLeft(u8, trimmed[xft_dpi_prefix.len..], " \t");
             return std.fmt.parseFloat(f32, value_str) catch null;
         }
     }
     return null;
+}
+
+/// Reads a GetProperty reply for RESOURCE_MANAGER and parses Xft.dpi from it.
+/// Returns the DPI scale factor, or null if Xft.dpi was not found/parseable.
+fn readDpiFromPropertyReply(source: *x11.Source, value_format: u8) (x11.ProtocolError || x11.Reader.Error)!?f32 {
+    const prop_header = try source.read3Header(.GetProperty);
+    const result: ?f32 = blk: {
+        if (value_format != 8) {
+            log.err("Xft.dpi unexpected format {}", .{value_format});
+            break :blk null;
+        }
+        if (prop_header.value_size_in_format_units == 0) {
+            log.err("Xft.dpi value size is 0", .{});
+            break :blk null;
+        }
+        const value_len: u35 = prop_header.value_size_in_format_units;
+        const data = try source.takeReply(value_len);
+        if (parseXftDpi(data)) |xft_dpi| {
+            const scale = xft_dpi / 96.0;
+            log.debug("Xft.dpi={d:.2} scale={d:.2}", .{ xft_dpi, scale });
+            break :blk scale;
+        }
+        log.err("failed to find '{s}' in Xft response", .{xft_dpi_prefix});
+        break :blk null;
+    };
+    try source.discardRemaining();
+    return result;
 }
 
 fn sendDpiGetProperty(sink: *x11.RequestSink) error{WriteFailed}!u16 {
@@ -534,6 +569,12 @@ const support_dpi_events: bool = blk: {
         if (id.getConfig().dpi_events) break :blk true;
     }
     break :blk false;
+};
+const DpiScale = struct {
+    val: if (support_dpi_events) f32 else void,
+    pub fn scale(d: DpiScale, comptime T: type, value: T) T {
+        return if (support_dpi_events) zin.scale(T, value, d.val) else value;
+    }
 };
 
 pub fn registerDynamicWindowClass(
@@ -782,7 +823,7 @@ pub fn staticWindow(window_id: zin.StaticWindowId) type {
         pub fn create(opt: zin.CreateWindowOptions) zin.CreateWindowError!void {
             //std.debug.assert(global.static_windows[@intFromEnum(window_id)] == null);
             const bg = global.conn.?.x11FromRgb(config.data().background);
-            const size = windowPixelSizeFromInit(opt.size, global.conn.?.dpi_scale_x, global.conn.?.dpi_scale_y);
+            const size = windowPixelSizeFromInit(opt.size, global.conn.?.dpi_scale);
             try createWindow(&config.data(), size, opt.pos, bg, global.conn.?.staticWindowId(window_id), &opt.platform);
             global.static_window_common_states[@intFromEnum(window_id)] = .{ .created = .{
                 .damaged = false,
@@ -860,20 +901,20 @@ pub fn backBufferFromWindow(id: x11.Window) x11.Drawable {
     return @enumFromInt(@intFromEnum(id) + 2);
 }
 
-fn windowPixelSizeFromInit(init: zin.WindowSizeInit, dpi_scale_x: f32, dpi_scale_y: f32) zin.XY {
+fn windowPixelSizeFromInit(init: zin.WindowSizeInit, dpi_scale: DpiScale) zin.XY {
     return switch (init) {
         .default => @panic("todo"),
         // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
         // TODO: the client size is not right
         .client_pixels => |s| s,
         .client_points => |s| .{
-            .x = zin.scale(i32, s.x, dpi_scale_x),
-            .y = zin.scale(i32, s.y, dpi_scale_y),
+            .x = dpi_scale.scale(i32, s.x),
+            .y = dpi_scale.scale(i32, s.y),
         },
         .window_pixels => |s| s,
         .window_points => |s| .{
-            .x = zin.scale(i32, s.x, dpi_scale_x),
-            .y = zin.scale(i32, s.y, dpi_scale_y),
+            .x = dpi_scale.scale(i32, s.x),
+            .y = dpi_scale.scale(i32, s.y),
         },
     };
 }
@@ -1353,29 +1394,19 @@ pub fn x11HandleMessage(source: *x11.Source, msg_kind: x11.ServerMsgKind) !void 
                     if (reply.sequence == seq) {
                         global.conn.?.dpi_get_property_sequence = null;
                         // Read the GetProperty reply header
-                        const value_format = reply.flexible; // format: 0, 8, 16, or 32
-                        const prop_header = try source.read3Header(.GetProperty);
-                        if (value_format == 8 and prop_header.value_size_in_format_units > 0) {
-                            const value_len: u35 = prop_header.value_size_in_format_units;
-                            const data = try source.takeReply(value_len);
-                            if (parseXftDpi(data)) |xft_dpi| {
-                                const scale = xft_dpi / 96.0;
-                                log.debug("Xft.dpi={d:.2} scale={d:.2}", .{ xft_dpi, scale });
-                                const old_x = global.conn.?.dpi_scale_x;
-                                const old_y = global.conn.?.dpi_scale_y;
-                                global.conn.?.dpi_scale_x = scale;
-                                global.conn.?.dpi_scale_y = scale;
-                                if (old_x != scale or old_y != scale) {
-                                    inline for (0..static_window_count) |window_id_int| {
-                                        const window_id: zin.StaticWindowId = @enumFromInt(window_id_int);
-                                        if (window_id.getConfig().dpi_events) {
-                                            staticCallback(window_id)(.dpi_change);
-                                        }
+
+                        if (try readDpiFromPropertyReply(source, reply.flexible)) |scale| {
+                            const old = global.conn.?.dpi_scale;
+                            global.conn.?.dpi_scale = .{ .val = scale };
+                            if (old.val != scale) {
+                                inline for (0..static_window_count) |window_id_int| {
+                                    const window_id: zin.StaticWindowId = @enumFromInt(window_id_int);
+                                    if (window_id.getConfig().dpi_events) {
+                                        staticCallback(window_id)(.dpi_change);
                                     }
                                 }
                             }
                         }
-                        try source.discardRemaining();
                         return;
                     }
                 }
@@ -1625,7 +1656,8 @@ pub fn Draw(window_config: zin.WindowConfig) type {
 
         pub fn getDpiScale(self: *const Self) struct { x: f32, y: f32 } {
             _ = self;
-            return .{ .x = global.conn.?.dpi_scale_x, .y = global.conn.?.dpi_scale_y };
+            if (!support_dpi_events) @compileError("cannot call getDpiScale without setting dpi_events to true");
+            return .{ .x = global.conn.?.dpi_scale.val, .y = global.conn.?.dpi_scale.val };
         }
 
         pub fn clear(self: *const Self) void {
