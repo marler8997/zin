@@ -557,10 +557,11 @@ fn getTime() u32 {
 }
 
 fn mouseDownFromWparam(wparam: win32.WPARAM) zin.MouseButtonsDown {
+    const mk: win32.MODIFIERKEYS_FLAGS = @bitCast(@as(u32, @truncate(wparam)));
     return .{
-        .left = 0 != (wparam & win32.MK_LBUTTON),
-        .right = 0 != (wparam & win32.MK_RBUTTON),
-        .middle = 0 != (wparam & win32.MK_MBUTTON),
+        .left = mk.LBUTTON != 0,
+        .right = mk.RBUTTON != 0,
+        .middle = mk.MBUTTON != 0,
     };
 }
 
