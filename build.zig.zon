@@ -10,8 +10,8 @@
             .hash = "zigwin32-25.0.28-preview-AAAAALYs5QNcI6U4YMngK-zET_wKAM10AWdbIcWEUaYV",
         },
         .x11 = .{
-            .url = "git+https://github.com/marler8997/zigx#ec13028030bd2ecf01d1c5f54491d3cd3dad9f22",
-            .hash = "x11-0.0.0-yWuw5qv-DAAMSwSFzjERIa27MjEFz1Jgd2uP3e5Cn7XR",
+            .url = "git+https://github.com/marler8997/zigx#5acbf8fedd7f8fc899ca4817552652d035fc06be",
+            .hash = "x11-0.0.0-yWuw5mb-DADTYD_DjIY0Oh-htkMXtL_Dv3Vo9X4d4Hbr",
         },
         // objc is in build.zig because it doesn't work on both 0.14 and 0.15
     },

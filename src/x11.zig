@@ -82,7 +82,7 @@ pub const Extension = struct {
         }) return false;
         if (word_count != 0) {
             log.err("QueryExtension should have 0 extra reply words but got {}", .{word_count});
-            return error.X11Protocol;
+            return error.Protocol;
         }
         const ext = try source.read3Full(.QueryExtension);
         const present = switch (ext.present) {
@@ -93,7 +93,7 @@ pub const Extension = struct {
                     "expected extension '{s}' present to be 0 or 1 but got {}",
                     .{ extension.name.nativeSlice(), v },
                 );
-                return error.X11Protocol;
+                return error.Protocol;
             },
         };
         if (present) {
@@ -166,7 +166,7 @@ pub const FixesExtension = struct {
         source: *x11.Source,
         sequence: u16,
         word_count: u32,
-    ) error{ X11Protocol, EndOfStream, ReadFailed }!bool {
+    ) error{ ReadFailed, EndOfStream, Protocol }!bool {
         const request: union(enum) {
             QueryExtension,
             QueryVersion: u8, // the opcode base
@@ -176,10 +176,10 @@ pub const FixesExtension = struct {
             .query_version_sent => |q| if (q.sequence == sequence) .{ .QueryVersion = q.opcode_base } else return false,
         };
 
-        extension.state, const maybe_error: ?error{ X11Protocol, EndOfStream, ReadFailed } = blk: {
+        extension.state, const maybe_error: ?error{ ReadFailed, EndOfStream, Protocol } = blk: {
             if (word_count != 0) {
                 log.err("{s} should have 0 extra reply words but got {}", .{ @tagName(request), word_count });
-                break :blk .{ .{ .resolved = null }, error.X11Protocol };
+                break :blk .{ .{ .resolved = null }, error.Protocol };
             }
             switch (request) {
                 .QueryExtension => {
@@ -195,7 +195,7 @@ pub const FixesExtension = struct {
                                 "expected extension '{f}' present to be 0 or 1 but got {}",
                                 .{ x11.fixes.name, v },
                             );
-                            break :blk .{ .{ .resolved = null }, error.X11Protocol };
+                            break :blk .{ .{ .resolved = null }, error.Protocol };
                         },
                     };
                     if (present) {
@@ -418,7 +418,7 @@ pub fn connect(out_err: *ConnectError) error{X11Connect}!void {
     errdefer x11.disconnect(global.i.socket_reader.getStream());
 
     global.i.setup = x11.readSetupSuccess(global.i.socket_reader.interface()) catch |err| switch (err) {
-        error.X11Protocol => return out_err.set(.{ .protocol_error = .setup }),
+        error.Protocol => return out_err.set(.{ .protocol_error = .setup }),
         error.ReadFailed, error.EndOfStream => |e| return out_err.setRecv(e),
     };
     std.log.info("setup reply {f}", .{global.i.setup});
@@ -436,7 +436,7 @@ pub fn connect(out_err: *ConnectError) error{X11Connect}!void {
     global.i.screen = (x11.draft.readSetupDynamic(&source, &global.i.setup, .{
         .on_visual = if (zin.config.x11_on_visual != null) &on_visual_adapter else null,
     }) catch |err| switch (err) {
-        error.X11Protocol => return out_err.set(.{ .protocol_error = .setup_dynamic }),
+        error.Protocol => return out_err.set(.{ .protocol_error = .setup_dynamic }),
         error.ReadFailed, error.EndOfStream => |e| return out_err.setRecv(e),
     }) orelse return out_err.set(.no_screen);
     global.i.socket_writer = x11.socketWriter(global.i.socket_reader.getStream(), &global.write_buffer);
@@ -456,12 +456,12 @@ pub fn connect(out_err: *ConnectError) error{X11Connect}!void {
             .{ .send_error = global.i.socket_writer.err orelse error.Unexpected },
         );
         const reply = source.readSynchronousReply1(seq) catch |err| return switch (err) {
-            error.X11Protocol => out_err.set(.{ .protocol_error = .read_dpi }),
+            error.Protocol => out_err.set(.{ .protocol_error = .read_dpi }),
             error.UnexpectedMessage => out_err.set(.{ .protocol_error = .unexpected_msg }),
             error.ReadFailed, error.EndOfStream => |e| out_err.setRecv(e),
         };
         const dpi_scale_val = readDpiFromPropertyReply(&source, reply.flexible) catch |err| return switch (err) {
-            error.X11Protocol => out_err.set(.{ .protocol_error = .discard_dpi }),
+            error.Protocol => out_err.set(.{ .protocol_error = .discard_dpi }),
             error.ReadFailed, error.EndOfStream => |e| out_err.setRecv(e),
         };
         break :blk .{ .val = dpi_scale_val orelse 1.0 };
@@ -477,7 +477,7 @@ pub fn connect(out_err: *ConnectError) error{X11Connect}!void {
         // TODO: should the initSynchronous function take the keymap by reference instead
         break :blk x11.keymap.Full.initSynchronous(&sink, &source, keyrange) catch |err| return switch (err) {
             error.WriteFailed => return out_err.set(.{ .send_error = global.i.socket_writer.err orelse error.Unexpected }),
-            error.X11Protocol => return out_err.set(.{ .protocol_error = .setup_dynamic }),
+            error.Protocol => return out_err.set(.{ .protocol_error = .setup_dynamic }),
             error.UnexpectedMessage => return out_err.set(.{ .protocol_error = .unexpected_msg }),
             error.ReadFailed, error.EndOfStream => |e| return out_err.setRecv(e),
         };
@@ -533,7 +533,7 @@ fn parseXftDpi(data: []const u8) ?f32 {
 
 /// Reads a GetProperty reply for RESOURCE_MANAGER and parses Xft.dpi from it.
 /// Returns the DPI scale factor, or null if Xft.dpi was not found/parseable.
-fn readDpiFromPropertyReply(source: *x11.Source, value_format: u8) error{ ReadFailed, EndOfStream, X11Protocol }!?f32 {
+fn readDpiFromPropertyReply(source: *x11.Source, value_format: u8) error{ ReadFailed, EndOfStream, Protocol }!?f32 {
     const prop_header = try source.read3Header(.GetProperty);
     const result: ?f32 = blk: {
         if (value_format != 8) {
@@ -1393,7 +1393,7 @@ pub fn x11HandleMessage(source: *x11.Source, msg_kind: x11.ServerMsgKind) !void 
                 if (new_remaining != remaining) {
                     if (new_remaining != 0) {
                         std.log.err("x11 reply {} was {} bytes longer than expected", .{ reply, remaining - new_remaining });
-                        return error.X11Protocol;
+                        return error.Protocol;
                     }
                     return;
                 }

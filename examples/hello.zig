@@ -279,7 +279,7 @@ fn x11Visual(screen_index: u8, depth: u8, visual_index: u16, visual: *const zin.
         },
     );
 }
-fn x11UnhandledReply(flex: u8, seq: u16, words: u32) error{ X11Protocol, ReadFailed, EndOfStream }!void {
+fn x11UnhandledReply(flex: u8, seq: u16, words: u32) error{ ReadFailed, EndOfStream, Protocol }!void {
     std.log.err("not handling x11 reply (flex={}, seq={}, {} words)", .{ flex, seq, words });
 }
 
