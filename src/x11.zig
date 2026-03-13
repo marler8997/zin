@@ -423,8 +423,18 @@ pub fn connect(out_err: *ConnectError) error{X11Connect}!void {
     };
     std.log.info("setup reply {f}", .{global.i.setup});
     var source: x11.Source = .initFinishSetup(global.i.socket_reader.interface(), &global.i.setup);
+
+    var on_visual_adapter: x11.draft.OnVisual = if (zin.config.x11_on_visual) |f|
+        .{ .func = struct {
+            fn cb(_: *x11.draft.OnVisual, si: u8, d: u8, vi: u16, v: *const x11.VisualType) void {
+                f(si, d, vi, v);
+            }
+        }.cb }
+    else
+        undefined;
+
     global.i.screen = (x11.draft.readSetupDynamic(&source, &global.i.setup, .{
-        .on_visual = if (zin.config.x11_on_visual) |f| &f else null,
+        .on_visual = if (zin.config.x11_on_visual != null) &on_visual_adapter else null,
     }) catch |err| switch (err) {
         error.X11Protocol => return out_err.set(.{ .protocol_error = .setup_dynamic }),
         error.ReadFailed, error.EndOfStream => |e| return out_err.setRecv(e),
@@ -523,7 +533,7 @@ fn parseXftDpi(data: []const u8) ?f32 {
 
 /// Reads a GetProperty reply for RESOURCE_MANAGER and parses Xft.dpi from it.
 /// Returns the DPI scale factor, or null if Xft.dpi was not found/parseable.
-fn readDpiFromPropertyReply(source: *x11.Source, value_format: u8) (x11.ProtocolError || x11.Reader.Error)!?f32 {
+fn readDpiFromPropertyReply(source: *x11.Source, value_format: u8) error{ ReadFailed, EndOfStream, X11Protocol }!?f32 {
     const prop_header = try source.read3Header(.GetProperty);
     const result: ?f32 = blk: {
         if (value_format != 8) {
