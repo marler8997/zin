@@ -272,13 +272,13 @@ pub const Connection = struct {
         if (id_offset < static_window_count * fixed_ids_per_window) return @as(zin.StaticWindowId, @enumFromInt(@divTrunc(id_offset, fixed_ids_per_window)));
         return null;
     }
-    fn drawableFromX11Id(self: *const Connection, id: u32) union(enum) {
+    fn drawableFromX11Id(_: *const Connection, id: u32) union(enum) {
         not_drawable,
         static_window: zin.StaticWindowId,
         static_back_buffer: zin.StaticWindowId,
     } {
-        if (id < @intFromEnum(self.setup.fixed().resource_id_base)) return .not_drawable;
-        const offset = id - @intFromEnum(self.setup.fixed().resource_id_base);
+        if (id < @intFromEnum(global.i.setup.resource_id_base)) return .not_drawable;
+        const offset = id - @intFromEnum(global.i.setup.resource_id_base);
         if (offset >= static_window_count * fixed_ids_per_window) return .not_drawable;
         return switch (@as(FixedWindowObject, @enumFromInt(offset % fixed_ids_per_window))) {
             .window => .{ .static_window = @as(zin.StaticWindowId, @enumFromInt(@divTrunc(offset, fixed_ids_per_window))) },
@@ -291,8 +291,8 @@ pub const Connection = struct {
         _ = self;
         return global.i.setup.resource_id_base.add(@as(u32, @intFromEnum(id)) * fixed_ids_per_window).window();
     }
-    pub fn staticWindowGc(self: *const Connection, id: zin.StaticWindowId) x11.GraphicsContext {
-        return self.setup.fixed().resource_id_base.add(@as(u32, @intFromEnum(id)) * fixed_ids_per_window + 1).graphicsContext();
+    pub fn staticWindowGc(_: *const Connection, id: zin.StaticWindowId) x11.GraphicsContext {
+        return global.i.setup.resource_id_base.add(@as(u32, @intFromEnum(id)) * fixed_ids_per_window + 1).graphicsContext();
     }
 
     pub fn reserveId(self: *Connection) x11.Resource {
@@ -301,7 +301,7 @@ pub const Connection = struct {
         return resource;
     }
     fn releaseId(self: *Connection, id: x11.Resource) void {
-        const offset = @intFromEnum(id) - static_window_count * fixed_ids_per_window - @intFromEnum(self.setup.fixed().resource_id_base);
+        const offset = @intFromEnum(id) - static_window_count * fixed_ids_per_window - @intFromEnum(global.i.setup.resource_id_base);
         if (self.next_id_offset == offset + 1) {
             self.next_id_offset = @intCast(offset);
         } else {
@@ -343,8 +343,8 @@ pub fn processInit(opt: zin.ProcessInitOptions) zin.ProcessInitError!void {
 
 pub const ConnectError = union(enum) {
     connect_error: x11.ConnectError,
-    recv_error: (error{EndOfStream} || x11.Stream.Reader.Error),
-    send_error: x11.Stream.Writer.Error,
+    recv_error: (error{EndOfStream} || std.net.Stream.Reader.Error),
+    send_error: std.net.Stream.Writer.Error,
     protocol_error: enum { setup, setup_dynamic, depth, read_dpi, discard_dpi, keycode_range, unexpected_msg },
     cant_authenticate,
     no_screen,
@@ -412,7 +412,7 @@ pub fn connect(out_err: *ConnectError) error{X11Connect}!void {
             &global.read_buffer,
             .{ .order = if (global.use_auth) .auth_first else .no_auth_first },
         ) catch |err| switch (err) {
-            error.X11Authentication => return out_err.set(.cant_authenticate),
+            error.AuthRejected => return out_err.set(.cant_authenticate),
         };
     };
     errdefer x11.disconnect(global.i.socket_reader.getStream());
@@ -652,10 +652,10 @@ pub const global = struct {
     // all decls in the i namespace are guaranteed to be initialized while conn
     // is not null (after a successfull call to connect).
     pub const i = struct {
-        pub var socket_reader: x11.Stream.Reader = undefined;
+        pub var socket_reader: std.net.Stream.Reader = undefined;
         pub var setup: x11.Setup = undefined;
         pub var screen: x11.ScreenHeader = undefined;
-        pub var socket_writer: x11.Stream.Writer = undefined;
+        pub var socket_writer: std.net.Stream.Writer = undefined;
     };
 
     var static_callbacks: [static_window_count]?*const anyopaque = @splat(null);
@@ -784,13 +784,13 @@ pub fn x11Socket() std.posix.socket_t {
 }
 /// Access the global socket writer.
 /// This should only be called while connected (after a successfull call to connect).
-pub fn x11SocketWriter() *x11.Stream.Writer {
+pub fn x11SocketWriter() *std.net.Stream.Writer {
     std.debug.assert(global.conn != null);
     return &global.i.socket_writer;
 }
 /// Access the global socket reader.
 /// This should only be called while connected (after a successfull call to connect).
-pub fn x11SocketReader() *x11.Stream.Reader {
+pub fn x11SocketReader() *std.net.Stream.Reader {
     std.debug.assert(global.conn != null);
     return &global.i.socket_reader;
 }
@@ -1194,7 +1194,7 @@ pub fn x11UpdateWindows() error{WriteFailed}!usize {
     return update_count;
 }
 
-fn pollSocketReader(socket_reader: *x11.Stream.Reader, timeout_nanos: ?u64) !enum { ready, timeout } {
+fn pollSocketReader(socket_reader: *std.net.Stream.Reader, timeout_nanos: ?u64) !enum { ready, timeout } {
     if (socket_reader.interface().bufferedLen() > 0) return .ready;
     var poll_fds = [_]std.posix.pollfd{
         .{
@@ -1429,9 +1429,9 @@ pub fn x11HandleMessage(source: *x11.Source, msg_kind: x11.ServerMsgKind) !void 
                     try source.discardRemaining();
                     return;
                 }
-                log.info("unhandled X11 {f}", .{source.readFmt()});
+                log.info("unhandled X11 {f}", .{source.readFmtDropError()});
             } else {
-                log.info("unhandled X11 {f} (set zin_config.x11_unhandled_reply to handle it)", .{source.readFmt()});
+                log.info("unhandled X11 {f} (set zin_config.x11_unhandled_reply to handle it)", .{source.readFmtDropError()});
             }
             try source.discardRemaining();
             return error.X11UnhandledReply;
@@ -1569,7 +1569,7 @@ pub fn x11HandleMessage(source: *x11.Source, msg_kind: x11.ServerMsgKind) !void 
         .MapNotify,
         .ReparentNotify,
         => {
-            log.debug("ignoring X11 {f}", .{source.readFmt()});
+            log.debug("ignoring X11 {f}", .{source.readFmtDropError()});
             // ensures we still discard the rest of the message if logging is disabled
             try source.discardRemaining();
         },
@@ -1610,7 +1610,7 @@ pub fn x11HandleMessage(source: *x11.Source, msg_kind: x11.ServerMsgKind) !void 
         },
         // .generic_extension_event => |msg| std.debug.panic("unexpected generic_extension_event {}", .{msg}),
         else => {
-            log.err("Unexpected X11 {f}", .{source.readFmt()});
+            log.err("Unexpected X11 {f}", .{source.readFmtDropError()});
             try source.discardRemaining();
             return error.X11UnexpectedMessage;
         },
