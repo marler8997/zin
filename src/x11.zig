@@ -44,200 +44,27 @@ pub fn panic(panic_opt: zin.PanicOptions) type {
 
 // 1 id for the window
 // 1 id for the graphics context
-// 1 id for the backbuffer (TODO: only some windows need a back buffer)
+// 1 id for the pixmap (used with present extension)
+// 1 id for the present event
 const FixedWindowObject = enum {
     window,
     graphics_context,
-    back_buffer, // NOTE: only some windows need a back buffer
+    pixmap,
+    present_event,
 };
 const fixed_ids_per_window: comptime_int = std.meta.fields(FixedWindowObject).len;
-
-pub const Extension = struct {
-    name: x11.Slice(u16, [*]const u8),
-    state: union(enum) {
-        not_queried,
-        query_sent: struct { sequence: u16 },
-        resolved: ?x11.Extension,
-    },
-    pub fn get(extension: *Extension, sink: *x11.RequestSink) error{WriteFailed}!?x11.Extension {
-        return switch (extension.state) {
-            .not_queried => {
-                try sink.QueryExtension(extension.name);
-                extension.state = .{ .query_sent = .{ .sequence = sink.sequence } };
-                return null;
-            },
-            .query_sent => null,
-            .resolved => |maybe_extension| maybe_extension,
-        };
-    }
-    pub fn readReply(
-        extension: *Extension,
-        source: *x11.Source,
-        sequence: u16,
-        word_count: u32,
-    ) !bool {
-        if (sequence != switch (extension.state) {
-            .query_sent => |query| query.sequence,
-            .not_queried, .resolved => return false,
-        }) return false;
-        if (word_count != 0) {
-            log.err("QueryExtension should have 0 extra reply words but got {}", .{word_count});
-            return error.Protocol;
-        }
-        const ext = try source.read3Full(.QueryExtension);
-        const present = switch (ext.present) {
-            .no => false,
-            .yes => true,
-            else => |v| {
-                log.err(
-                    "expected extension '{s}' present to be 0 or 1 but got {}",
-                    .{ extension.name.nativeSlice(), v },
-                );
-                return error.Protocol;
-            },
-        };
-        if (present) {
-            log.info(
-                "extension '{s}': bases opcode={} event={} error={}",
-                .{ extension.name.nativeSlice(), ext.opcode_base, ext.event_base, ext.error_base },
-            );
-        } else {
-            log.info("extension '{s}': not present", .{extension.name.nativeSlice()});
-        }
-        extension.state = .{ .resolved = x11.Extension{
-            .opcode_base = ext.opcode_base,
-            .event_base = ext.event_base,
-            .error_base = ext.error_base,
-        } };
-        return true;
-    }
-};
-
-// The XFIXES extension requires that QueryVersion be called first before any
-// other requests are sent, so, this is provided to help avoid the issue of
-// inadvertently forgetting to do this.
-pub const FixesExtension = struct {
-    max_supported_version: struct {
-        major: u32,
-        minor: u32,
-    },
-    state: union(enum) {
-        not_queried,
-        query_extension_sent: u16, // the sequence number
-        got_extension: u8, // opcode base
-        query_version_sent: struct {
-            opcode_base: u8,
-            sequence: u16,
-        },
-        resolved: ?Resolved,
-    } = .not_queried,
-
-    pub const Resolved = struct {
-        opcode_base: u8,
-        version: struct { major: u32, minor: u32 },
-    };
-
-    pub fn get(extension: *FixesExtension, sink: *x11.RequestSink) error{WriteFailed}!?Resolved {
-        return switch (extension.state) {
-            .not_queried => {
-                try sink.QueryExtension(x11.fixes.name);
-                extension.state = .{ .query_extension_sent = sink.sequence };
-                return null;
-            },
-            .got_extension => |opcode_base| {
-                try x11.fixes.request.QueryVersion(
-                    sink,
-                    opcode_base,
-                    extension.max_supported_version.major,
-                    extension.max_supported_version.minor,
-                );
-                extension.state = .{ .query_version_sent = .{
-                    .opcode_base = opcode_base,
-                    .sequence = sink.sequence,
-                } };
-                return null;
-            },
-            .query_extension_sent, .query_version_sent => null,
-            .resolved => |r| r,
-        };
-    }
-    pub fn readReply(
-        extension: *FixesExtension,
-        source: *x11.Source,
-        sequence: u16,
-        word_count: u32,
-    ) error{ ReadFailed, EndOfStream, Protocol }!bool {
-        const request: union(enum) {
-            QueryExtension,
-            QueryVersion: u8, // the opcode base
-        } = switch (extension.state) {
-            .not_queried, .got_extension, .resolved => return false,
-            .query_extension_sent => |query_sequence| if (query_sequence == sequence) .QueryExtension else return false,
-            .query_version_sent => |q| if (q.sequence == sequence) .{ .QueryVersion = q.opcode_base } else return false,
-        };
-
-        extension.state, const maybe_error: ?error{ ReadFailed, EndOfStream, Protocol } = blk: {
-            if (word_count != 0) {
-                log.err("{s} should have 0 extra reply words but got {}", .{ @tagName(request), word_count });
-                break :blk .{ .{ .resolved = null }, error.Protocol };
-            }
-            switch (request) {
-                .QueryExtension => {
-                    const ext = source.read3Full(.QueryExtension) catch |err| break :blk .{
-                        .{ .resolved = null },
-                        err,
-                    };
-                    const present = switch (ext.present) {
-                        .no => false,
-                        .yes => true,
-                        else => |v| {
-                            log.err(
-                                "expected extension '{f}' present to be 0 or 1 but got {}",
-                                .{ x11.fixes.name, v },
-                            );
-                            break :blk .{ .{ .resolved = null }, error.Protocol };
-                        },
-                    };
-                    if (present) {
-                        log.info(
-                            "extension '{f}': bases opcode={} event={} error={}",
-                            .{ x11.fixes.name, ext.opcode_base, ext.event_base, ext.error_base },
-                        );
-                    } else {
-                        log.info("extension '{f}': not present", .{x11.fixes.name});
-                    }
-                    break :blk .{
-                        .{ .got_extension = ext.opcode_base },
-                        null,
-                    };
-                },
-                .QueryVersion => |opcode_base| {
-                    const version = source.read3Full(.fixes_QueryVersion) catch |err| break :blk .{
-                        .{ .resolved = null },
-                        err,
-                    };
-                    log.info("extension '{f}': version {}.{}", .{ x11.fixes.name, version.major, version.minor });
-                    break :blk .{ .{ .resolved = .{
-                        .opcode_base = opcode_base,
-                        .version = .{ .major = version.major, .minor = version.minor },
-                    } }, null };
-                },
-            }
-        };
-        return if (maybe_error) |e| e else true;
-    }
-};
 
 pub const Connection = struct {
     sink: x11.RequestSink,
     source: x11.Source,
+    id_range: x11.IdRange,
     depth: x11.Depth,
     dpi_scale: DpiScale,
 
     keymap: if (support_key_events) x11.keymap.Full else void,
     // TODO: we'll need some better mechanism for ids so we can't run out
     next_id_offset: u32 = 0,
-    dbe: Extension = .{ .name = x11.dbe.name, .state = .not_queried },
+    present_opcode_base: u8,
 
     dpi_get_property_sequence: ?u16 = null,
 
@@ -267,43 +94,48 @@ pub const Connection = struct {
         @panic("todo");
     }
     fn staticWindowFromX11Id(self: *const Connection, window: x11.Window) ?zin.StaticWindowId {
-        _ = self;
-        const id_offset = @intFromEnum(window) - @intFromEnum(global.i.setup.resource_id_base);
-        if (id_offset < static_window_count * fixed_ids_per_window) return @as(zin.StaticWindowId, @enumFromInt(@divTrunc(id_offset, fixed_ids_per_window)));
-        return null;
+        const off = self.id_range.offset(@enumFromInt(@intFromEnum(window))) orelse return null;
+        if (off >= static_window_count * fixed_ids_per_window) return null;
+        return @enumFromInt(@divTrunc(off, fixed_ids_per_window));
     }
-    fn drawableFromX11Id(_: *const Connection, id: u32) union(enum) {
+    fn drawableFromX11Id(self: *const Connection, id: u32) union(enum) {
         not_drawable,
         static_window: zin.StaticWindowId,
-        static_back_buffer: zin.StaticWindowId,
+        static_pixmap: zin.StaticWindowId,
     } {
-        if (id < @intFromEnum(global.i.setup.resource_id_base)) return .not_drawable;
-        const offset = id - @intFromEnum(global.i.setup.resource_id_base);
-        if (offset >= static_window_count * fixed_ids_per_window) return .not_drawable;
-        return switch (@as(FixedWindowObject, @enumFromInt(offset % fixed_ids_per_window))) {
-            .window => .{ .static_window = @as(zin.StaticWindowId, @enumFromInt(@divTrunc(offset, fixed_ids_per_window))) },
+        const off = self.id_range.offset(@enumFromInt(id)) orelse return .not_drawable;
+        if (off >= static_window_count * fixed_ids_per_window) return .not_drawable;
+        return switch (@as(FixedWindowObject, @enumFromInt(off % fixed_ids_per_window))) {
+            .window => .{ .static_window = @enumFromInt(@divTrunc(off, fixed_ids_per_window)) },
             .graphics_context => .not_drawable,
-            .back_buffer => .{ .static_window = @as(zin.StaticWindowId, @enumFromInt(@divTrunc(offset - 2, fixed_ids_per_window))) },
+            .pixmap => .{ .static_pixmap = @enumFromInt(@divTrunc(off, fixed_ids_per_window)) },
+            .present_event => .not_drawable,
         };
     }
 
     pub fn staticWindowId(self: *const Connection, id: zin.StaticWindowId) x11.Window {
-        _ = self;
-        return global.i.setup.resource_id_base.add(@as(u32, @intFromEnum(id)) * fixed_ids_per_window).window();
+        return self.id_range.addAssumeCapacity(@as(u29, @intFromEnum(id)) * fixed_ids_per_window + @intFromEnum(FixedWindowObject.window)).window();
     }
-    pub fn staticWindowGc(_: *const Connection, id: zin.StaticWindowId) x11.GraphicsContext {
-        return global.i.setup.resource_id_base.add(@as(u32, @intFromEnum(id)) * fixed_ids_per_window + 1).graphicsContext();
+    pub fn staticWindowGc(self: *const Connection, id: zin.StaticWindowId) x11.GraphicsContext {
+        return self.id_range.addAssumeCapacity(@as(u29, @intFromEnum(id)) * fixed_ids_per_window + @intFromEnum(FixedWindowObject.graphics_context)).graphicsContext();
+    }
+    pub fn staticWindowPixmap(self: *const Connection, id: zin.StaticWindowId) x11.Pixmap {
+        return self.id_range.addAssumeCapacity(@as(u29, @intFromEnum(id)) * fixed_ids_per_window + @intFromEnum(FixedWindowObject.pixmap)).pixmap();
+    }
+    pub fn staticWindowPresentEventId(self: *const Connection, id: zin.StaticWindowId) u32 {
+        return @intFromEnum(self.id_range.addAssumeCapacity(@as(u29, @intFromEnum(id)) * fixed_ids_per_window + @intFromEnum(FixedWindowObject.present_event)));
     }
 
-    pub fn reserveId(self: *Connection) x11.Resource {
-        const resource = global.i.setup.resource_id_base.add(@intCast(static_window_count * fixed_ids_per_window + self.next_id_offset));
+    pub fn reserveId(self: *Connection) ?x11.Resource {
+        const resource = self.id_range.add(@intCast(static_window_count * fixed_ids_per_window + self.next_id_offset)) orelse return null;
         self.next_id_offset += 1;
         return resource;
     }
     fn releaseId(self: *Connection, id: x11.Resource) void {
-        const offset = @intFromEnum(id) - static_window_count * fixed_ids_per_window - @intFromEnum(global.i.setup.resource_id_base);
-        if (self.next_id_offset == offset + 1) {
-            self.next_id_offset = @intCast(offset);
+        const off = self.id_range.offset(id) orelse @panic("releaseId: id not in range");
+        const dynamic_offset = off - static_window_count * fixed_ids_per_window;
+        if (self.next_id_offset == dynamic_offset + 1) {
+            self.next_id_offset = @intCast(dynamic_offset);
         } else {
             @panic("todo");
         }
@@ -345,7 +177,7 @@ pub const ConnectError = union(enum) {
     connect_error: x11.ConnectError,
     recv_error: (error{EndOfStream} || std.net.Stream.Reader.Error),
     send_error: std.net.Stream.Writer.Error,
-    protocol_error: enum { setup, setup_dynamic, depth, read_dpi, discard_dpi, keycode_range, unexpected_msg },
+    protocol_error: enum { setup, setup_dynamic, depth, id_range, id_range_capacity, present_not_available, read_dpi, discard_dpi, keycode_range, unexpected_msg },
     cant_authenticate,
     no_screen,
 
@@ -442,9 +274,31 @@ pub fn connect(out_err: *ConnectError) error{X11Connect}!void {
     global.i.socket_writer = x11.socketWriter(global.i.socket_reader.getStream(), &global.write_buffer);
     var sink: x11.RequestSink = .{ .writer = &global.i.socket_writer.interface };
 
+    const id_range = x11.IdRange.init(global.i.setup.resource_id_base, global.i.setup.resource_id_mask) catch
+        return out_err.set(.{ .protocol_error = .id_range });
+    const needed_ids = static_window_count * fixed_ids_per_window;
+    if (id_range.capacity() < needed_ids) {
+        log.err("X server id range capacity {} is less than needed {}", .{ id_range.capacity(), needed_ids });
+        return out_err.set(.{ .protocol_error = .id_range_capacity });
+    }
+
     const depth = x11.Depth.init(global.i.screen.root_depth) orelse {
         log.err("unsupported screen depth {}", .{global.i.screen.root_depth});
         return out_err.set(.{ .protocol_error = .depth });
+    };
+
+    const present_ext = (x11.draft.synchronousQueryExtension(
+        &source,
+        &sink,
+        x11.present.name,
+    ) catch |err| return switch (err) {
+        error.WriteFailed => out_err.set(.{ .send_error = global.i.socket_writer.err orelse error.Unexpected }),
+        error.Protocol => out_err.set(.{ .protocol_error = .present_not_available }),
+        error.UnexpectedMessage => out_err.set(.{ .protocol_error = .unexpected_msg }),
+        error.ReadFailed, error.EndOfStream => |e| out_err.setRecv(e),
+    }) orelse {
+        log.err("{s} extension not available", .{x11.present.name.nativeSlice()});
+        return out_err.set(.{ .protocol_error = .present_not_available });
     };
 
     const dpi_scale: DpiScale = blk: {
@@ -485,9 +339,11 @@ pub fn connect(out_err: *ConnectError) error{X11Connect}!void {
     global.conn = .{
         .sink = sink,
         .source = source,
+        .id_range = id_range,
         .depth = depth,
         .dpi_scale = dpi_scale,
         .keymap = keymap,
+        .present_opcode_base = present_ext.opcode_base,
         .write_error = null,
     };
 
@@ -597,9 +453,7 @@ pub fn registerDynamicWindowClass(
     @panic("todo: dynamic x11 windows");
 }
 
-pub const WindowConfig = struct {
-    render_kind: enum { immediate, double_buffered },
-};
+pub const WindowConfig = struct {};
 
 pub const WindowClass = struct {
     callback: *const anyopaque,
@@ -706,12 +560,10 @@ fn StaticWindowCustomState(window_id: zin.StaticWindowId) type {
             .{ .x = 0, .y = 0 }
         else {},
         timers: [timer_count]?Timer = [1]?Timer{null} ** timer_count,
-        back_buffer: switch (window_id.getConfig().x11.render_kind) {
-            .immediate => struct {},
-            .double_buffered => struct {
-                allocated: bool = false,
-            },
-        } = .{},
+        pixmap_allocated: bool = false,
+        present_selected: bool = false,
+        present_serial: u32 = 0,
+        render_in_flight: bool = false,
 
         pub const timer_count = timerCount(window_id.getConfig().TimerId());
 
@@ -848,17 +700,12 @@ pub fn staticWindow(window_id: zin.StaticWindowId) type {
                 .created => {},
             }
 
-            switch (window_id.getConfig().x11.render_kind) {
-                .immediate => {},
-                .double_buffered => if (global.staticWindowCustomState(window_id).back_buffer.allocated) {
-                    if (global.conn.?.write_error != null) {
-                        x11.dbe.Deallocate(
-                            &global.conn.?.sink,
-                            global.conn.?.dbe.state.resolved.?.opcode_base,
-                            backBufferFromWindow(global.conn.?.staticWindowId(window_id)),
-                        ) catch |e| global.conn.?.setWriteError(e);
-                    }
-                },
+            if (global.staticWindowCustomState(window_id).pixmap_allocated) {
+                if (global.conn.?.write_error == null) {
+                    global.conn.?.sink.FreePixmap(
+                        global.conn.?.staticWindowPixmap(window_id),
+                    ) catch |e| global.conn.?.setWriteError(e);
+                }
             }
 
             if (global.conn.?.write_error == null) {
@@ -905,12 +752,13 @@ pub fn staticWindow(window_id: zin.StaticWindowId) type {
 }
 
 pub fn gcFromWindow(id: x11.Window) x11.GraphicsContext {
-    return @enumFromInt(@intFromEnum(id) + 1);
+    const off = global.conn.?.id_range.offset(@enumFromInt(@intFromEnum(id))).?;
+    return global.conn.?.id_range.addAssumeCapacity(off + 1).graphicsContext();
 }
-pub fn backBufferFromWindow(id: x11.Window) x11.Drawable {
-    return @enumFromInt(@intFromEnum(id) + 2);
+pub fn pixmapFromWindow(id: x11.Window) x11.Pixmap {
+    const off = global.conn.?.id_range.offset(@enumFromInt(@intFromEnum(id))).?;
+    return global.conn.?.id_range.addAssumeCapacity(off + 2).pixmap();
 }
-
 fn windowPixelSizeFromInit(init: zin.WindowSizeInit, dpi_scale: DpiScale) zin.XY {
     return switch (init) {
         .default => @panic("todo"),
@@ -930,8 +778,8 @@ fn windowPixelSizeFromInit(init: zin.WindowSizeInit, dpi_scale: DpiScale) zin.XY
 }
 
 pub fn createDynamicWindow(class: WindowClass, opt: zin.CreateWindowOptions) zin.CreateWindowError!DynamicWindow {
-    const window_id = global.conn.?.reserveId().window();
-    errdefer global.connection.releaseId(window_id.resource());
+    const window_id = (global.conn.?.reserveId() orelse return error.OutOfIds).window();
+    errdefer global.conn.?.releaseId(@enumFromInt(@intFromEnum(window_id)));
     //const bg = x11FromRgb((zin.WindowConfig{ .static = window_id }).data().background);
     if (true) @panic("todo: get the background from the window config");
     try createWindow(&opt, window_id);
@@ -947,7 +795,7 @@ pub const CreateWindowOptions = struct {
     bg_pixmap: x11.window.BgPixmap = .none,
     border_pixmap: x11.window.BorderPixmap = .copy_from_parent,
     border_pixel: ?u32 = null,
-    bit_gravity: x11.BitGravity = .forget,
+    bit_gravity: x11.BitGravity = .north_west,
     win_gravity: x11.WinGravity = .north_west,
     backing_store: x11.window.BackingStore = .not_useful,
     backing_planes: u32 = 0xffffffff,
@@ -1118,7 +966,7 @@ fn mouseButtonFromMsg(detail: u8) ?zin.MouseButtonId {
     };
 }
 
-fn drawStaticWindow(comptime window_id: zin.StaticWindowId) error{WriteFailed}!enum { not_created, success } {
+fn drawStaticWindow(comptime window_id: zin.StaticWindowId) error{WriteFailed}!enum { not_created, rendered, not_ready } {
     if (global.conn.?.write_error) |e| return e;
 
     switch (global.static_window_common_states[@intFromEnum(window_id)]) {
@@ -1126,49 +974,54 @@ fn drawStaticWindow(comptime window_id: zin.StaticWindowId) error{WriteFailed}!e
         .created => {},
     }
 
+    const state = global.staticWindowCustomState(window_id);
+    if (state.render_in_flight) return .not_ready;
+
     const config = zin.WindowConfig{ .static = window_id };
     const window = global.conn.?.staticWindowId(window_id);
-    const UseBackBuffer = switch (window_id.getConfig().x11.render_kind) {
-        .immediate => void,
-        .double_buffered => bool,
-    };
-    const use_back_buffer: UseBackBuffer = blk: switch (window_id.getConfig().x11.render_kind) {
-        .immediate => break :blk {},
-        .double_buffered => {
-            if (global.staticWindowCustomState(window_id).back_buffer.allocated)
-                break :blk true;
-            if (try global.conn.?.dbe.get(&global.conn.?.sink)) |dbe| {
-                try x11.dbe.Allocate(
-                    &global.conn.?.sink,
-                    dbe.opcode_base,
-                    window,
-                    backBufferFromWindow(window),
-                    .background,
-                );
-                global.staticWindowCustomState(window_id).back_buffer.allocated = true;
-                break :blk true;
-            }
-            break :blk false;
-        },
-    };
+    const pixmap = global.conn.?.staticWindowPixmap(window_id);
+
+    if (!state.pixmap_allocated) {
+        const client_size = if (config.data().window_size_events) state.client_size else zin.XY{ .x = 1, .y = 1 };
+        try global.conn.?.sink.CreatePixmap(pixmap, window.drawable(), .{
+            .depth = global.conn.?.depth,
+            .width = @intCast(client_size.x),
+            .height = @intCast(client_size.y),
+        });
+        state.pixmap_allocated = true;
+    }
+
+    if (!state.present_selected) {
+        try x11.present.selectInput(
+            &global.conn.?.sink,
+            global.conn.?.present_opcode_base,
+            global.conn.?.staticWindowPresentEventId(window_id),
+            window,
+            .{ .idle_notify = true },
+        );
+        state.present_selected = true;
+    }
 
     staticCallback(window_id)(.{ .draw = .{
         .window = window,
-        .use_back_buffer = use_back_buffer,
-        .client_size = if (config.data().window_size_events) global.staticWindowCustomState(window_id).client_size else {},
+        .client_size = if (config.data().window_size_events) state.client_size else {},
         .background = if (comptime config.data().dynamic_background) config.data().background else {},
     } });
     if (global.conn.?.write_error) |e| return e;
 
-    switch (window_id.getConfig().x11.render_kind) {
-        .immediate => {},
-        .double_buffered => if (use_back_buffer) {
-            try x11.dbe.Swap(&global.conn.?.sink, global.conn.?.dbe.state.resolved.?.opcode_base, .initAssume(&.{
-                .{ .window = window, .action = .background },
-            }));
-        },
-    }
-    return .success;
+    state.present_serial +%= 1;
+    try x11.present.presentPixmap(
+        &global.conn.?.sink,
+        global.conn.?.present_opcode_base,
+        window,
+        pixmap,
+        state.present_serial,
+        0,
+        0,
+        0,
+    );
+    state.render_in_flight = true;
+    return .rendered;
 }
 
 pub fn x11UpdateWindows() error{WriteFailed}!usize {
@@ -1182,11 +1035,13 @@ pub fn x11UpdateWindows() error{WriteFailed}!usize {
                 switch (static_window_id) {
                     inline else => |window_id| switch (try drawStaticWindow(window_id)) {
                         .not_created => unreachable,
-                        .success => {},
+                        .rendered => {
+                            created.damaged = false;
+                            update_count += 1;
+                        },
+                        .not_ready => {},
                     },
                 }
-                created.damaged = false;
-                update_count += 1;
             }
         },
     };
@@ -1386,18 +1241,6 @@ pub fn x11HandleMessage(source: *x11.Source, msg_kind: x11.ServerMsgKind) !void 
         },
         .Reply => {
             const reply = try source.read2(.Reply);
-            const remaining = source.replyRemainingSize();
-            _ = try global.conn.?.dbe.readReply(source, reply.sequence, reply.word_count);
-            {
-                const new_remaining = source.replyRemainingSize();
-                if (new_remaining != remaining) {
-                    if (new_remaining != 0) {
-                        std.log.err("x11 reply {} was {} bytes longer than expected", .{ reply, remaining - new_remaining });
-                        return error.Protocol;
-                    }
-                    return;
-                }
-            }
 
             if (support_dpi_events) {
                 if (global.conn.?.dpi_get_property_sequence) |seq| {
@@ -1422,6 +1265,7 @@ pub fn x11HandleMessage(source: *x11.Source, msg_kind: x11.ServerMsgKind) !void 
                 }
             }
 
+            const remaining = source.replyRemainingSize();
             if (zin.config.x11_on_unhandled_reply) |func| {
                 try func(reply.flexible, reply.sequence, reply.word_count);
                 const new_remaining = source.replyRemainingSize();
@@ -1590,10 +1434,45 @@ pub fn x11HandleMessage(source: *x11.Source, msg_kind: x11.ServerMsgKind) !void 
                     const current_size = global.staticWindowCustomState(window_id).client_size;
                     if (msg.width != current_size.x or msg.height != current_size.y) {
                         global.staticWindowCustomState(window_id).client_size = .{ .x = msg.width, .y = msg.height };
+                        // Recreate the pixmap at the new size
+                        const state = global.staticWindowCustomState(window_id);
+                        if (state.pixmap_allocated) {
+                            const pixmap = global.conn.?.staticWindowPixmap(window_id);
+                            global.conn.?.sink.FreePixmap(pixmap) catch |e| {
+                                global.conn.?.setWriteError(e);
+                                return e;
+                            };
+                            global.conn.?.sink.CreatePixmap(pixmap, global.conn.?.staticWindowId(window_id).drawable(), .{
+                                .depth = global.conn.?.depth,
+                                .width = @intCast(msg.width),
+                                .height = @intCast(msg.height),
+                            }) catch |e| {
+                                global.conn.?.setWriteError(e);
+                                return e;
+                            };
+                        }
                         staticCallback(window_id)(.{ .window_size = .{ .x = msg.width, .y = msg.height } });
                     }
                 },
             } else @panic("todo: configure_notify on dynamic windows");
+        },
+        .GenericEvent => {
+            const event = try source.read2(.GenericEvent);
+            if (event.isPresentIdleNotify(global.conn.?.present_opcode_base)) {
+                const idle = try source.read3Full(.present_IdleNotify);
+                // Find which window this belongs to and mark render as no longer in flight
+                inline for (0..static_window_count) |window_id_int| {
+                    const wid: zin.StaticWindowId = @enumFromInt(window_id_int);
+                    if (idle.event_id == global.conn.?.staticWindowPresentEventId(wid)) {
+                        const state = global.staticWindowCustomState(wid);
+                        state.render_in_flight = false;
+                        break;
+                    }
+                }
+            } else {
+                log.err("unexpected GenericEvent ext_opcode={} type={}", .{ event.ext_opcode_base, event.type });
+                try source.discardRemaining();
+            }
         },
         .PropertyNotify => {
             const event = try source.read2(.PropertyNotify);
@@ -1608,7 +1487,6 @@ pub fn x11HandleMessage(source: *x11.Source, msg_kind: x11.ServerMsgKind) !void 
             }
             log.debug("ignoring PropertyNotify: window={any} atom={any}", .{ event.window, event.atom });
         },
-        // .generic_extension_event => |msg| std.debug.panic("unexpected generic_extension_event {}", .{msg}),
         else => {
             log.err("Unexpected X11 {f}", .{source.readFmtDropError()});
             try source.discardRemaining();
@@ -1645,23 +1523,13 @@ pub const PolygonPoint = struct {
 pub fn Draw(window_config: zin.WindowConfig) type {
     return struct {
         window: x11.Window,
-        use_back_buffer: switch (window_config.data().x11.render_kind) {
-            .immediate => void,
-            .double_buffered => bool,
-        },
         client_size: if (window_config.data().window_size_events) zin.XY else void,
         background: if (window_config.data().dynamic_background) zin.Rgb8 else void,
 
         const Self = @This();
 
         pub fn x11Drawable(self: *const Self) x11.Drawable {
-            return switch (window_config.data().x11.render_kind) {
-                .immediate => self.window.drawable(),
-                .double_buffered => if (self.use_back_buffer)
-                    backBufferFromWindow(self.window)
-                else
-                    self.window.drawable(),
-            };
+            return pixmapFromWindow(self.window).drawable();
         }
 
         pub fn getDpiScale(self: *const Self) struct { x: f32, y: f32 } {
@@ -1672,25 +1540,24 @@ pub fn Draw(window_config: zin.WindowConfig) type {
 
         pub fn clear(self: *const Self) void {
             if (global.conn.?.write_error != null) return;
-            switch (window_config.data().x11.render_kind) {
-                .immediate => {},
-                .double_buffered => if (self.use_back_buffer) return,
-            }
             const rgb = if (comptime window_config.data().dynamic_background)
                 self.background
             else
                 window_config.data().background;
+            const drawable = self.x11Drawable();
             global.conn.?.sink.ChangeGc(gcFromWindow(self.window), .{
-                .background = global.conn.?.x11FromRgb(rgb),
+                .foreground = global.conn.?.x11FromRgb(rgb),
             }) catch |e| return global.conn.?.setWriteError(e);
-            // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-            // TODO: get the actual width/height
-            global.conn.?.sink.ClearArea(self.window, .{
-                .x = 0,
-                .y = 0,
-                .width = @intCast(self.client_size.x),
-                .height = @intCast(self.client_size.y),
-            }, .{ .exposures = false }) catch |e| return global.conn.?.setWriteError(e);
+            global.conn.?.sink.PolyFillRectangle(
+                drawable,
+                gcFromWindow(self.window),
+                .initAssume(&[_]x11.Rectangle{.{
+                    .x = 0,
+                    .y = 0,
+                    .width = @intCast(self.client_size.x),
+                    .height = @intCast(self.client_size.y),
+                }}),
+            ) catch |e| return global.conn.?.setWriteError(e);
         }
 
         pub fn rect(self: *const Self, r: zin.Rect, rgb: zin.Rgb8) void {

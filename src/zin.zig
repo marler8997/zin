@@ -532,6 +532,7 @@ pub const CreateWindowOptions = struct {
 
 pub const CreateWindowError = error{
     WriteFailed,
+    OutOfIds,
 };
 pub const createDynamicWindow = platform.createDynamicWindow;
 
