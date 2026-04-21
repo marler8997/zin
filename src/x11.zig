@@ -44,12 +44,13 @@ pub fn panic(panic_opt: zin.PanicOptions) type {
 
 // 1 id for the window
 // 1 id for the graphics context
-// 1 id for the pixmap (used with present extension)
+// 2 ids for pixmaps (double-buffered via present extension)
 // 1 id for the present event
 const FixedWindowObject = enum {
     window,
     graphics_context,
-    pixmap,
+    pixmap_0,
+    pixmap_1,
     present_event,
 };
 const fixed_ids_per_window: comptime_int = std.meta.fields(FixedWindowObject).len;
@@ -108,7 +109,7 @@ pub const Connection = struct {
         return switch (@as(FixedWindowObject, @enumFromInt(off % fixed_ids_per_window))) {
             .window => .{ .static_window = @enumFromInt(@divTrunc(off, fixed_ids_per_window)) },
             .graphics_context => .not_drawable,
-            .pixmap => .{ .static_pixmap = @enumFromInt(@divTrunc(off, fixed_ids_per_window)) },
+            .pixmap_0, .pixmap_1 => .{ .static_pixmap = @enumFromInt(@divTrunc(off, fixed_ids_per_window)) },
             .present_event => .not_drawable,
         };
     }
@@ -119,8 +120,11 @@ pub const Connection = struct {
     pub fn staticWindowGc(self: *const Connection, id: zin.StaticWindowId) x11.GraphicsContext {
         return self.id_range.addAssumeCapacity(@as(u29, @intFromEnum(id)) * fixed_ids_per_window + @intFromEnum(FixedWindowObject.graphics_context)).graphicsContext();
     }
-    pub fn staticWindowPixmap(self: *const Connection, id: zin.StaticWindowId) x11.Pixmap {
-        return self.id_range.addAssumeCapacity(@as(u29, @intFromEnum(id)) * fixed_ids_per_window + @intFromEnum(FixedWindowObject.pixmap)).pixmap();
+    pub fn staticWindowPixmaps(self: *const Connection, id: zin.StaticWindowId) [2]x11.Pixmap {
+        return .{
+            self.id_range.addAssumeCapacity(@as(u29, @intFromEnum(id)) * fixed_ids_per_window + @intFromEnum(FixedWindowObject.pixmap_0)).pixmap(),
+            self.id_range.addAssumeCapacity(@as(u29, @intFromEnum(id)) * fixed_ids_per_window + @intFromEnum(FixedWindowObject.pixmap_1)).pixmap(),
+        };
     }
     pub fn staticWindowPresentEventId(self: *const Connection, id: zin.StaticWindowId) u32 {
         return @intFromEnum(self.id_range.addAssumeCapacity(@as(u29, @intFromEnum(id)) * fixed_ids_per_window + @intFromEnum(FixedWindowObject.present_event)));
@@ -560,10 +564,7 @@ fn StaticWindowCustomState(window_id: zin.StaticWindowId) type {
             .{ .x = 0, .y = 0 }
         else {},
         timers: [timer_count]?Timer = [1]?Timer{null} ** timer_count,
-        pixmap_allocated: bool = false,
-        present_selected: bool = false,
-        present_serial: u32 = 0,
-        render_in_flight: bool = false,
+        presenter: ?x11.Presenter = null,
 
         pub const timer_count = timerCount(window_id.getConfig().TimerId());
 
@@ -700,11 +701,14 @@ pub fn staticWindow(window_id: zin.StaticWindowId) type {
                 .created => {},
             }
 
-            if (global.staticWindowCustomState(window_id).pixmap_allocated) {
+            if (global.staticWindowCustomState(window_id).presenter != null) {
                 if (global.conn.?.write_error == null) {
-                    global.conn.?.sink.FreePixmap(
-                        global.conn.?.staticWindowPixmap(window_id),
-                    ) catch |e| global.conn.?.setWriteError(e);
+                    for (global.conn.?.staticWindowPixmaps(window_id)) |pixmap| {
+                        global.conn.?.sink.FreePixmap(pixmap) catch |e| {
+                            global.conn.?.setWriteError(e);
+                            break;
+                        };
+                    }
                 }
             }
 
@@ -754,10 +758,6 @@ pub fn staticWindow(window_id: zin.StaticWindowId) type {
 pub fn gcFromWindow(id: x11.Window) x11.GraphicsContext {
     const off = global.conn.?.id_range.offset(@enumFromInt(@intFromEnum(id))).?;
     return global.conn.?.id_range.addAssumeCapacity(off + 1).graphicsContext();
-}
-pub fn pixmapFromWindow(id: x11.Window) x11.Pixmap {
-    const off = global.conn.?.id_range.offset(@enumFromInt(@intFromEnum(id))).?;
-    return global.conn.?.id_range.addAssumeCapacity(off + 2).pixmap();
 }
 fn windowPixelSizeFromInit(init: zin.WindowSizeInit, dpi_scale: DpiScale) zin.XY {
     return switch (init) {
@@ -975,52 +975,33 @@ fn drawStaticWindow(comptime window_id: zin.StaticWindowId) error{WriteFailed}!e
     }
 
     const state = global.staticWindowCustomState(window_id);
-    if (state.render_in_flight) return .not_ready;
 
     const config = zin.WindowConfig{ .static = window_id };
     const window = global.conn.?.staticWindowId(window_id);
-    const pixmap = global.conn.?.staticWindowPixmap(window_id);
 
-    if (!state.pixmap_allocated) {
+    if (state.presenter == null) {
         const client_size = if (config.data().window_size_events) state.client_size else zin.XY{ .x = 1, .y = 1 };
-        try global.conn.?.sink.CreatePixmap(pixmap, window.drawable(), .{
+        state.presenter = .{
+            .opcode_base = global.conn.?.present_opcode_base,
             .depth = global.conn.?.depth,
-            .width = @intCast(client_size.x),
-            .height = @intCast(client_size.y),
-        });
-        state.pixmap_allocated = true;
+            .window_id = window,
+            .event_id = global.conn.?.staticWindowPresentEventId(window_id),
+            .pixmaps = global.conn.?.staticWindowPixmaps(window_id),
+        };
+        try state.presenter.?.init(&global.conn.?.sink, @intCast(client_size.x), @intCast(client_size.y));
     }
 
-    if (!state.present_selected) {
-        try x11.present.selectInput(
-            &global.conn.?.sink,
-            global.conn.?.present_opcode_base,
-            global.conn.?.staticWindowPresentEventId(window_id),
-            window,
-            .{ .idle_notify = true },
-        );
-        state.present_selected = true;
-    }
+    const back_pixmap = state.presenter.?.beginFrame() orelse return .not_ready;
 
     staticCallback(window_id)(.{ .draw = .{
         .window = window,
+        .pixmap = back_pixmap,
         .client_size = if (config.data().window_size_events) state.client_size else {},
         .background = if (comptime config.data().dynamic_background) config.data().background else {},
     } });
     if (global.conn.?.write_error) |e| return e;
 
-    state.present_serial +%= 1;
-    try x11.present.presentPixmap(
-        &global.conn.?.sink,
-        global.conn.?.present_opcode_base,
-        window,
-        pixmap,
-        state.present_serial,
-        0,
-        0,
-        0,
-    );
-    state.render_in_flight = true;
+    try state.presenter.?.endFrame(&global.conn.?.sink);
     return .rendered;
 }
 
@@ -1434,19 +1415,9 @@ pub fn x11HandleMessage(source: *x11.Source, msg_kind: x11.ServerMsgKind) !void 
                     const current_size = global.staticWindowCustomState(window_id).client_size;
                     if (msg.width != current_size.x or msg.height != current_size.y) {
                         global.staticWindowCustomState(window_id).client_size = .{ .x = msg.width, .y = msg.height };
-                        // Recreate the pixmap at the new size
                         const state = global.staticWindowCustomState(window_id);
-                        if (state.pixmap_allocated) {
-                            const pixmap = global.conn.?.staticWindowPixmap(window_id);
-                            global.conn.?.sink.FreePixmap(pixmap) catch |e| {
-                                global.conn.?.setWriteError(e);
-                                return e;
-                            };
-                            global.conn.?.sink.CreatePixmap(pixmap, global.conn.?.staticWindowId(window_id).drawable(), .{
-                                .depth = global.conn.?.depth,
-                                .width = @intCast(msg.width),
-                                .height = @intCast(msg.height),
-                            }) catch |e| {
+                        if (state.presenter != null) {
+                            state.presenter.?.resize(&global.conn.?.sink, @intCast(msg.width), @intCast(msg.height)) catch |e| {
                                 global.conn.?.setWriteError(e);
                                 return e;
                             };
@@ -1458,16 +1429,29 @@ pub fn x11HandleMessage(source: *x11.Source, msg_kind: x11.ServerMsgKind) !void 
         },
         .GenericEvent => {
             const event = try source.read2(.GenericEvent);
-            if (event.isPresentIdleNotify(global.conn.?.present_opcode_base)) {
-                const idle = try source.read3Full(.present_IdleNotify);
-                // Find which window this belongs to and mark render as no longer in flight
+            if (event.isPresentCompleteNotify(global.conn.?.present_opcode_base)) {
+                const complete = try source.read3Full(.present_CompleteNotify);
                 inline for (0..static_window_count) |window_id_int| {
                     const wid: zin.StaticWindowId = @enumFromInt(window_id_int);
-                    if (idle.event_id == global.conn.?.staticWindowPresentEventId(wid)) {
-                        const state = global.staticWindowCustomState(wid);
-                        state.render_in_flight = false;
-                        break;
+                    const state = global.staticWindowCustomState(wid);
+                    if (state.presenter != null) {
+                        if (state.presenter.?.handleCompleteNotify(complete) catch |e| return e) break;
                     }
+                } else {
+                    log.err("CompleteNotify not accepted by any window", .{});
+                    return error.X11UnexpectedMessage;
+                }
+            } else if (event.isPresentIdleNotify(global.conn.?.present_opcode_base)) {
+                const idle = try source.read3Full(.present_IdleNotify);
+                inline for (0..static_window_count) |window_id_int| {
+                    const wid: zin.StaticWindowId = @enumFromInt(window_id_int);
+                    const state = global.staticWindowCustomState(wid);
+                    if (state.presenter != null) {
+                        if (state.presenter.?.handleIdleNotify(idle) catch |e| return e) break;
+                    }
+                } else {
+                    log.err("IdleNotify not accepted by any window", .{});
+                    return error.X11UnexpectedMessage;
                 }
             } else {
                 log.err("unexpected GenericEvent ext_opcode={} type={}", .{ event.ext_opcode_base, event.type });
@@ -1523,13 +1507,14 @@ pub const PolygonPoint = struct {
 pub fn Draw(window_config: zin.WindowConfig) type {
     return struct {
         window: x11.Window,
+        pixmap: x11.Pixmap,
         client_size: if (window_config.data().window_size_events) zin.XY else void,
         background: if (window_config.data().dynamic_background) zin.Rgb8 else void,
 
         const Self = @This();
 
         pub fn x11Drawable(self: *const Self) x11.Drawable {
-            return pixmapFromWindow(self.window).drawable();
+            return self.pixmap.drawable();
         }
 
         pub fn getDpiScale(self: *const Self) struct { x: f32, y: f32 } {
