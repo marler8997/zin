@@ -1,0 +1,22 @@
+name: Test
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, windows-11-arm, macos-latest]
+      fail-fast: false
+    runs-on: ${{matrix.os}}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: marler8997/setup-anyzig@master
+      # running the examples needs a display, so CI only builds them
+      - run: zig build --summary all install examples
+      - run: zig build -Dtarget=x86_64-linux --summary all examples
+      - run: zig build -Dtarget=aarch64-linux --summary all examples
+      - run: zig build -Dtarget=x86_64-windows --summary all examples
+      - run: zig build -Dtarget=aarch64-windows --summary all examples
