@@ -57,7 +57,7 @@ const extra_config: zin.WindowConfigData = .{
 
 const global = struct {
     var class_extra: ?zin.WindowClass = null;
-    var last_animation: ?std.time.Instant = null;
+    var last_animation: ?std.Io.Timestamp = null;
     var text_position: f32 = 0;
     var mouse_position: ?zin.XY = null;
     var mouse_down: zin.MouseButtonsDown = .{
@@ -74,13 +74,17 @@ const test_win32_class: zin.WindowClassDefinition(.{ .static = .testWin32 }) = .
     .macos_view = "TestWin32View",
 };
 
-pub fn main() !void {
+pub fn main(init: std.process.Init.Minimal) !void {
     // one-time process initialization
     try zin.processInit(.{});
 
     {
         var err: zin.X11ConnectError = undefined;
-        zin.x11Connect(&err) catch std.debug.panic("X11 connect failed: {f}", .{err});
+        zin.x11Connect(
+            std.Io.Threaded.global_single_threaded.io(),
+            init.environ,
+            &err,
+        ) catch std.debug.panic("X11 connect failed: {f}", .{err});
     }
     defer zin.x11Disconnect();
 
@@ -132,8 +136,8 @@ fn callback(cb: zin.Callback(.{ .static = .main })) void {
         .window_size => {},
         .draw => |d| {
             {
-                const now = std.time.Instant.now() catch @panic("?");
-                const elapsed_ns = if (global.last_animation) |l| now.since(l) else 0;
+                const now: std.Io.Timestamp = .now(std.Io.Threaded.global_single_threaded.io(), .awake);
+                const elapsed_ns = if (global.last_animation) |l| l.durationTo(now).toNanoseconds() else 0;
                 global.last_animation = now;
 
                 const speed: f32 = 0.0000000001;
@@ -183,7 +187,7 @@ fn callback(cb: zin.Callback(.{ .static = .main })) void {
         .key => |key| {
             var keyboard_state: zin.UnicodeKeyboardState = .init();
             const utf8 = key.utf8(keyboard_state.ref());
-            if (null != std.mem.indexOfScalar(u8, utf8.slice(), 'n')) {
+            if (null != std.mem.findScalar(u8, utf8.slice(), 'n')) {
                 if (global.class_extra == null) {
                     global.class_extra = zin.registerDynamicWindowClass(extra_config, .{
                         .callback = extraCallback,
@@ -269,7 +273,7 @@ fn x11Visual(screen_index: u8, depth: u8, visual_index: u16, visual: *const zin.
             screen_index,
             depth,
             visual_index,
-            @intFromEnum(visual.id),
+            @backingInt(visual.id),
             zin.fmtEnum(visual.class),
             visual.bits_per_rgb_value,
             visual.colormap_entries,
@@ -289,10 +293,10 @@ const Icons = struct {
 };
 fn getIcons(dpi_x: u32, dpi_y: u32) Icons {
     if (builtin.os.tag == .windows) {
-        const small_x = win32.GetSystemMetricsForDpi(@intFromEnum(win32.SM_CXSMICON), dpi_x);
-        const small_y = win32.GetSystemMetricsForDpi(@intFromEnum(win32.SM_CYSMICON), dpi_y);
-        const large_x = win32.GetSystemMetricsForDpi(@intFromEnum(win32.SM_CXICON), dpi_x);
-        const large_y = win32.GetSystemMetricsForDpi(@intFromEnum(win32.SM_CYICON), dpi_y);
+        const small_x = win32.GetSystemMetricsForDpi(win32.SM_CXSMICON, dpi_x);
+        const small_y = win32.GetSystemMetricsForDpi(win32.SM_CYSMICON, dpi_y);
+        const large_x = win32.GetSystemMetricsForDpi(win32.SM_CXICON, dpi_x);
+        const large_y = win32.GetSystemMetricsForDpi(win32.SM_CYICON, dpi_y);
         std.log.info("icons small={}x{} large={}x{} at dpi {}x{}", .{
             small_x, small_y,
             large_x, large_y,

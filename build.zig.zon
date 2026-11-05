@@ -2,18 +2,24 @@
     .name = .zin,
     .version = "0.0.0",
     .fingerprint = 0xb812a825c703b45b, // Changing this has security and trust implications.
-    .zig_version = "0.15.2",
-    .minimum_zig_version = "0.14.0",
+    .minimum_zig_version = "0.17.0",
+    .zig_version = "0.17.1",
     .dependencies = .{
         .win32 = .{
-            .url = "git+https://github.com/marlersoft/zigwin32#fd6ebce3ebfe48f291069c0ddc518b2cc83be450",
-            .hash = "zigwin32-25.0.28-preview-AAAAALYs5QNcI6U4YMngK-zET_wKAM10AWdbIcWEUaYV",
+            .url = "git+https://github.com/marlersoft/zigwin32#fb2645891520f3e99931db17a7eba04057e87e89",
+            .hash = "win32-42.0.39-preview-mX5pFc794wMcrMyFgsO1c4csBdowhpiqqwIyN_xjqI5z",
+            .lazy = true,
         },
         .x11 = .{
-            .url = "git+https://github.com/marler8997/zigx#9bcbd6b82c034ed34e02d70c6e01c7a37a3f471b",
-            .hash = "x11-0.0.0-yWuw5lDyDQBgwtcKmMsroww7ZebMjCAvgHMzIvGbhQYd",
+            .url = "git+https://github.com/marler8997/zigx#c36c804e6173395d392065381e82546a64725e33",
+            .hash = "x11-0.0.0-yWuw5iqHDQAmD5CzPx3k0ECPqO29nV_yz3rm7PEElEcS",
+            .lazy = true,
         },
-        // objc is in build.zig because it doesn't work on both 0.14 and 0.15
+        .objc = .{
+            .url = "git+https://github.com/mitchellh/zig-objc#bee663fdfaa0c554235dc36b1dce88d136a190ec",
+            .hash = "zig_objc-0.0.0-Ir_Sp_4tAQDXtPi51nW_jD9LOEzBvU9lofwO9Pzi6IB4",
+            .lazy = true,
+        },
     },
     .paths = .{
         "build.zig",

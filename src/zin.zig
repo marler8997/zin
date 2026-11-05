@@ -10,8 +10,6 @@ pub const Rgb8 = @import("Rgb8.zig");
 const win32 = @import("win32.zig");
 const x11 = @import("x11.zig");
 
-pub const zig_atleast_15 = @import("builtin").zig_version.order(.{ .major = 0, .minor = 15, .patch = 0 }) != .lt;
-
 const PlatformKind = enum {
     x11,
     win32,
@@ -47,10 +45,6 @@ pub const PanicOptions = struct {
 };
 pub const panic = platform.panic;
 
-pub fn getX11Display() []const u8 {
-    return @import("x11").getDisplay();
-}
-
 pub const Connection = if (platform_kind == .x11) x11.Connection else struct {
     pub fn deinit(self: Connection, allocator: std.mem.Allocator) void {
         _ = self;
@@ -69,16 +63,8 @@ pub const ProcessInitError = error{
     NSApplicationLoadFailed,
     Win32NoDpiAwareness,
     Win32OnlySystemDpiAwareness,
-    X11WsaStartupFailed,
-    X11DisplayInvalidWtf8,
-    X11BadDisplay,
-    OutOfMemory,
 };
-pub const ProcessInitOptions = struct {
-    /// By default the x11 backend calls WSAStartup on windows, set this to false
-    /// to disable this behavior.
-    x11_wsa_startup: if (platform_kind == .x11) bool else void = if (platform_kind == .x11) true else {},
-};
+pub const ProcessInitOptions = struct {};
 // one-time process initialization
 pub const processInit = platform.processInit;
 
@@ -91,28 +77,17 @@ pub fn enforceDpiAware() DpiAwarenessError!void {
 }
 
 pub const X11ConnectError = if (platform_kind == .x11) x11.ConnectError else struct {
-    pub const format = if (zig_atleast_15) formatNew else formatLegacy;
-    fn formatNew(err: X11ConnectError, writer: *std.Io.Writer) error{WriteFailed}!void {
+    pub fn format(err: X11ConnectError, writer: *std.Io.Writer) error{WriteFailed}!void {
         _ = err;
-        _ = writer;
-        unreachable;
-    }
-    fn formatLegacy(
-        err: X11ConnectError,
-        comptime fmt: []const u8,
-        options: std.fmt.FormatOptions,
-        writer: anytype,
-    ) !void {
-        _ = err;
-        _ = fmt;
-        _ = options;
         _ = writer;
         unreachable;
     }
 };
 /// Connects to the X11 server, for non-X11 platforms does nothing.
 pub const x11Connect = if (platform_kind == .x11) x11.connect else connectNoOp;
-fn connectNoOp(err: *X11ConnectError) error{X11Connect}!void {
+fn connectNoOp(io: std.Io, environ: std.process.Environ, err: *X11ConnectError) error{X11Connect}!void {
+    _ = io;
+    _ = environ;
     _ = err;
 }
 pub const x11Disconnect = if (platform_kind == .x11) x11.disconnect else disconnectNoOp;
@@ -193,17 +168,17 @@ pub const Key = struct {
                 var char_buf: [max_wtf16_per_key + 1]u16 = undefined;
 
                 // release control key when getting the unicode character of this key
-                const save_control_state = keyboard_state[@intFromEnum(platform.win32.VK_CONTROL)];
-                keyboard_state[@intFromEnum(platform.win32.VK_CONTROL)] = 0;
+                const save_control_state = keyboard_state[@backingInt(platform.win32.VK_CONTROL)];
+                keyboard_state[@backingInt(platform.win32.VK_CONTROL)] = 0;
                 const unicode_result = platform.win32.ToUnicode(
-                    @intFromEnum(key.vk),
-                    @intFromEnum(key.scan_code),
+                    @backingInt(key.vk),
+                    @backingInt(key.scan_code),
                     keyboard_state,
                     @ptrCast(&char_buf),
                     max_wtf16_per_key,
                     0,
                 );
-                keyboard_state[@intFromEnum(platform.win32.VK_CONTROL)] = save_control_state;
+                keyboard_state[@backingInt(platform.win32.VK_CONTROL)] = save_control_state;
                 if (unicode_result < 0) return .{ .len = 0, .buffer = undefined }; // dead key
                 if (unicode_result > max_wtf16_per_key) {
                     for (char_buf[0..@intCast(unicode_result)], 0..) |codepoint, i| {
@@ -325,30 +300,17 @@ const Field = struct {
     type: type,
 };
 fn makeTaggedUnion(fields: []const Field) type {
-    const EnumField = std.builtin.Type.EnumField;
-    const UnionField = std.builtin.Type.UnionField;
-
-    var enum_fields: [fields.len]EnumField = undefined;
-    var union_fields: [fields.len]UnionField = undefined;
-
-    for (fields, 0..) |field, i| {
-        enum_fields[i] = .{ .name = field.name, .value = i };
-        union_fields[i] = .{ .name = field.name, .type = field.type, .alignment = @alignOf(field.type) };
+    const TagInt = std.math.IntFittingRange(0, fields.len - 1);
+    var names: [fields.len][]const u8 = undefined;
+    var types: [fields.len]type = undefined;
+    var values: [fields.len]TagInt = undefined;
+    for (fields, &names, &types, &values, 0..) |field, *name, *T, *value, i| {
+        name.* = field.name;
+        T.* = field.type;
+        value.* = i;
     }
-
-    return @Type(std.builtin.Type{
-        .@"union" = .{
-            .layout = .auto,
-            .tag_type = @Type(std.builtin.Type{ .@"enum" = .{
-                .tag_type = std.math.IntFittingRange(0, fields.len - 1),
-                .fields = &enum_fields,
-                .decls = &.{},
-                .is_exhaustive = true,
-            } }),
-            .fields = &union_fields,
-            .decls = &.{},
-        },
-    });
+    const Tag = @Enum(TagInt, .exhaustive, &names, &values);
+    return @Union(.auto, Tag, &names, &types, &@splat(.{}));
 }
 
 pub const WindowConfig = union(enum) {
@@ -392,7 +354,7 @@ pub const WindowConfigData = struct {
 fn checkTimersType(comptime T: type) void {
     switch (@typeInfo(T)) {
         .@"enum" => {
-            const fields = std.meta.fields(T);
+            const fields = @typeInfo(T).@"enum".field_names;
             if (fields.len == 0) @compileError("cannot set timers to enum type with 0 values, use .none instead");
             if (fields.len == 1) @compileError("cannot set timers to enum type with 1 value, use .one instead");
         },
@@ -404,7 +366,7 @@ fn checkTimersType(comptime T: type) void {
 pub fn intFromTimerId(comptime Int: type, comptime TimerId: type, id: TimerId) Int {
     return switch (@typeInfo(TimerId)) {
         .void => return platform.min_timer_id_int,
-        .@"enum" => @intFromEnum(id),
+        .@"enum" => @backingInt(id),
         else => @compileError("unsupported TimerId type: " ++ @typeName(TimerId)),
     };
 }
@@ -414,7 +376,7 @@ pub fn timerIdFromInt(comptime TimerId: type, int: anytype) TimerId {
             std.debug.assert(int == platform.min_timer_id_int);
             return {};
         },
-        .@"enum" => @enumFromInt(int),
+        .@"enum" => @fromBackingInt(@intCast(int)),
         else => @compileError("unsupported TimerId type: " ++ @typeName(TimerId)),
     };
 }
@@ -653,33 +615,16 @@ pub fn FmtEnum(comptime T: type) type {
         value: T,
 
         const Self = @This();
-        pub const format = if (zig_atleast_15) formatNew else formatLegacy;
-        fn formatNew(self: Self, writer: *std.Io.Writer) error{WriteFailed}!void {
-            if (@typeInfo(T).@"enum".is_exhaustive) {
+        pub fn format(self: Self, writer: *std.Io.Writer) error{WriteFailed}!void {
+            if (@typeInfo(T).@"enum".mode == .exhaustive) {
                 try writer.print("{s}", .{@tagName(self.value)});
             } else {
-                @setEvalBranchQuota(@typeInfo(T).@"enum".fields.len);
+                @setEvalBranchQuota(@typeInfo(T).@"enum".field_names.len);
                 if (std.enums.tagName(T, self.value)) |name| {
                     try writer.print("{s}", .{name});
                 } else {
-                    try writer.print("?({d})", .{@intFromEnum(self.value)});
+                    try writer.print("?({d})", .{@backingInt(self.value)});
                 }
-            }
-        }
-        fn formatLegacy(
-            self: Self,
-            comptime fmt: []const u8,
-            options: std.fmt.FormatOptions,
-            writer: anytype,
-        ) !void {
-            _ = fmt;
-            _ = options;
-            if (@typeInfo(T).@"enum".is_exhaustive) {
-                try writer.print("{s}", .{@tagName(self.value)});
-            } else if (std.enums.tagName(T, self.value)) |name| {
-                try writer.print("{s}", .{name});
-            } else {
-                try writer.print("?({d})", .{@intFromEnum(self.value)});
             }
         }
     };

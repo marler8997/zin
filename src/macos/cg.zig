@@ -230,18 +230,11 @@ pub const Error = enum(c_int) {
             else => null,
         };
     }
-    pub fn format(
-        self: Error,
-        comptime fmt: []const u8,
-        options: std.fmt.FormatOptions,
-        writer: anytype,
-    ) !void {
-        _ = fmt;
-        _ = options;
+    pub fn format(self: Error, writer: *std.Io.Writer) error{WriteFailed}!void {
         if (self.str()) |s| {
-            try writer.print("{} ({s})", .{ @intFromEnum(self), s });
+            try writer.print("{} ({s})", .{ @backingInt(self), s });
         } else {
-            try writer.print("{}", .{@intFromEnum(self)});
+            try writer.print("{}", .{@backingInt(self)});
         }
     }
 };
