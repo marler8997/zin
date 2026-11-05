@@ -1,13 +1,8 @@
 const std = @import("std");
 const zin = @import("zin.zig");
-const c = @cImport({
-    @cInclude("CoreGraphics/CoreGraphics.h");
-    // @cInclude("CoreFoundation/CoreFoundation.h");
-});
+const c = @import("c");
 const objc = @import("objc");
 const cg = @import("macos/cg.zig");
-
-pub const zig_atleast_15 = @import("builtin").zig_version.order(.{ .major = 0, .minor = 15, .patch = 0 }) != .lt;
 
 const log = std.log.scoped(.macos);
 
@@ -75,15 +70,11 @@ pub fn panic(panic_opt: zin.PanicOptions) type {
                 thread_is_panicing = true;
                 var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
                 const oom_msg = "allocate error message failed";
-                const msg_z: [:0]const u8 = if (zig_atleast_15) std.fmt.allocPrintSentinel(
+                const msg_z: [:0]const u8 = std.fmt.allocPrintSentinel(
                     arena.allocator(),
                     "{s}",
                     .{msg},
                     0,
-                ) catch oom_msg else std.fmt.allocPrintZ(
-                    arena.allocator(),
-                    "{s}",
-                    .{msg},
                 ) catch oom_msg;
                 modalAlert(panic_opt.title, msg_z, "OK");
             }
@@ -94,7 +85,7 @@ pub fn panic(panic_opt: zin.PanicOptions) type {
 
 pub const min_timer_id_int = 0;
 
-const static_window_count = @typeInfo(zin.StaticWindowId).@"enum".fields.len;
+const static_window_count = @typeInfo(zin.StaticWindowId).@"enum".field_names.len;
 const global = struct {
     var static_classes: [static_window_count]?AnyZinView = @splat(null);
     var static_windows: [static_window_count]?NSWindow = @splat(null);
@@ -111,20 +102,20 @@ pub fn staticWindow(window_id: zin.StaticWindowId) type {
             runtime_config: zin.WindowClassRuntimeConfig,
         ) void {
             _ = runtime_config;
-            std.debug.assert(global.static_classes[@intFromEnum(window_id)] == null);
+            std.debug.assert(global.static_classes[@backingInt(window_id)] == null);
             const view = ZinView(.{ .static = window_id }, def).create();
-            global.static_classes[@intFromEnum(window_id)] = view.any();
+            global.static_classes[@backingInt(window_id)] = view.any();
         }
         pub fn unregisterClass() void {}
         pub fn create(opt: zin.CreateWindowOptions) zin.CreateWindowError!void {
-            std.debug.assert(global.static_windows[@intFromEnum(window_id)] == null);
-            global.static_windows[@intFromEnum(window_id)] = try createWindow(
+            std.debug.assert(global.static_windows[@backingInt(window_id)] == null);
+            global.static_windows[@backingInt(window_id)] = try createWindow(
                 // global.static_classes[@intFromEnum(window_id)] orelse zin.debugPanicOrUnreachable(
                 //     "registerClass was not called for static window '{s}'",
                 //     .{@tagName(window_id)},
                 // ),
                 &opt,
-                global.static_classes[@intFromEnum(window_id)] orelse zin.debugPanicOrUnreachable(
+                global.static_classes[@backingInt(window_id)] orelse zin.debugPanicOrUnreachable(
                     "registerClass was not called for static window '{s}'",
                     .{@tagName(window_id)},
                 ),
@@ -132,7 +123,7 @@ pub fn staticWindow(window_id: zin.StaticWindowId) type {
         }
         pub fn destroy() void {}
         pub fn getClientSize() zin.XY {
-            const view = global.static_windows[@intFromEnum(window_id)].?.contentView();
+            const view = global.static_windows[@backingInt(window_id)].?.contentView();
             return (AnyZinView{ .obj = view }).getClientSize();
         }
         pub fn show() void {
@@ -142,14 +133,14 @@ pub fn staticWindow(window_id: zin.StaticWindowId) type {
             @panic("todo: implement foreground");
         }
         pub fn invalidate() void {
-            const view = global.static_windows[@intFromEnum(window_id)].?.contentView();
+            const view = global.static_windows[@backingInt(window_id)].?.contentView();
             return (AnyZinView{ .obj = view }).setNeedsDisplay(true);
         }
         pub fn startTimerMillis(id: window_id.getConfig().TimerId(), millis: u32) void {
             startTimerNanos(id, std.time.ns_per_ms * @as(u64, millis));
         }
         pub fn startTimerNanos(id: window_id.getConfig().TimerId(), nanos: u64) void {
-            const view = global.static_windows[@intFromEnum(window_id)].?.contentView();
+            const view = global.static_windows[@backingInt(window_id)].?.contentView();
             const seconds = @as(f64, @floatFromInt(nanos)) / std.time.ns_per_s;
             const id_int = zin.intFromTimerId(u32, window_id.getConfig().TimerId(), id);
             const timer = getClass("NSTimer").msgSend(objc.Object, "scheduledTimerWithTimeInterval:target:selector:userInfo:repeats:", .{
@@ -660,7 +651,7 @@ fn ZinView(
                 self.obj,
                 objc.sel("windowWillClose:"),
                 NSString.stringWithUTF8String("NSWindowWillCloseNotification").obj,
-                w,
+                w.obj,
             });
             // Register for window should close notification by becoming the window delegate
             w.obj.msgSend(void, "setDelegate:", .{self.obj});
@@ -682,7 +673,7 @@ fn ZinView(
                     bounds,
                     tracking_options,
                     self.obj,
-                    @as(?objc.Object, null),
+                    @as(objc.c.id, null),
                 });
                 defer tracking_area.release();
                 self.obj.msgSend(void, "addTrackingArea:", .{tracking_area});
@@ -695,7 +686,7 @@ fn ZinView(
                     self.obj,
                     objc.sel("windowDidChangeBackingProperties:"),
                     NSString.stringWithUTF8String("NSWindowDidChangeBackingPropertiesNotification").obj,
-                    w,
+                    w.obj,
                 });
             }
         }
@@ -793,7 +784,7 @@ fn ZinView(
             const window_point = event.msgSend(NSPoint, "locationInWindow", .{});
             const view_point = self.obj.msgSend(NSPoint, "convertPoint:fromView:", .{
                 window_point,
-                @as(?objc.Object, null), // null means window coordinates
+                @as(objc.c.id, null), // null means window coordinates
             });
             return .{
                 .x = @intFromFloat(view_point.x),
@@ -944,7 +935,7 @@ fn ZinView(
 
             const key_event: zin.Key = .{
                 .kind = if (is_repeat) .down_repeat else .down,
-                .vk = @enumFromInt(key_code),
+                .vk = @fromBackingInt(@intCast(key_code)),
                 .scan_code = {},
                 .win32_extended = {},
                 .x11_mask = {},
@@ -969,7 +960,7 @@ fn ZinView(
 
             const key_event: zin.Key = .{
                 .kind = .up,
-                .vk = @enumFromInt(key_code),
+                .vk = @fromBackingInt(@intCast(key_code)),
                 .scan_code = {},
                 .win32_extended = {},
                 .x11_mask = {},
@@ -993,7 +984,7 @@ fn ZinView(
             const modifier_flags: NSEventModifierFlags = @bitCast(event.msgSend(c_ulong, "modifierFlags", .{}));
 
             // Determine the VirtualKey based on the key code
-            const vk: VirtualKey = @enumFromInt(key_code);
+            const vk: VirtualKey = @fromBackingInt(@intCast(key_code));
 
             // Determine if this is a key down or up based on modifier flags
             // This is complex because flagsChanged doesn't directly tell us up/down
@@ -1106,7 +1097,7 @@ const NSAlert = struct {
         return .{ .obj = self.obj.msgSend(objc.Object, "window", .{}) };
     }
     pub fn setAlertStyle(self: NSAlert, style: AlertStyle) void {
-        self.obj.msgSend(void, "setAlertStyle:", .{@intFromEnum(style)});
+        self.obj.msgSend(void, "setAlertStyle:", .{@backingInt(style)});
     }
     pub fn setInformativeText(self: NSAlert, s: NSString) void {
         self.obj.msgSend(void, "setInformativeText:", .{s.obj});
@@ -1136,7 +1127,7 @@ const NSApplication = struct {
         self.obj.msgSend(void, "run", .{});
     }
     pub fn stop(self: NSApplication) void {
-        self.obj.msgSend(void, "stop:", .{null});
+        self.obj.msgSend(void, "stop:", .{@as(objc.c.id, null)});
     }
 };
 
@@ -1165,7 +1156,7 @@ const NSWindow = struct {
         self.obj.msgSend(void, "setTitle:", .{title.obj});
     }
     pub fn makeKeyAndOrderFront(self: NSWindow) void {
-        self.obj.msgSend(void, "makeKeyAndOrderFront:", .{0});
+        self.obj.msgSend(void, "makeKeyAndOrderFront:", .{@as(objc.c.id, null)});
     }
     pub fn contentView(self: NSWindow) objc.Object {
         const obj = self.obj.msgSend(objc.Object, "contentView", .{});

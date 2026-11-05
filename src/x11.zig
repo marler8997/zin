@@ -10,8 +10,6 @@ pub const win32 = switch (builtin.os.tag) {
 
 const log = std.log.scoped(.x11);
 
-pub const zig_atleast_15 = @import("builtin").zig_version.order(.{ .major = 0, .minor = 15, .patch = 0 }) != .lt;
-
 threadlocal var thread_is_panicing = false;
 pub fn panic(panic_opt: zin.PanicOptions) type {
     return std.debug.FullPanic(struct {
@@ -24,15 +22,11 @@ pub fn panic(panic_opt: zin.PanicOptions) type {
                     thread_is_panicing = true;
                     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
                     const oom_msg = "allocate error message failed";
-                    const msg_z: [:0]const u8 = if (zig_atleast_15) std.fmt.allocPrintSentinel(
+                    const msg_z: [:0]const u8 = std.fmt.allocPrintSentinel(
                         arena.allocator(),
                         "{s}",
                         .{msg},
                         0,
-                    ) catch oom_msg else std.fmt.allocPrintZ(
-                        arena.allocator(),
-                        "{s}",
-                        .{msg},
                     ) catch oom_msg;
                     _ = @import("win32").everything.MessageBoxA(null, msg_z, panic_opt.title, panic_opt.win32_style);
                 }
@@ -53,7 +47,7 @@ const FixedWindowObject = enum {
     pixmap_1,
     present_event,
 };
-const fixed_ids_per_window: comptime_int = std.meta.fields(FixedWindowObject).len;
+const fixed_ids_per_window: comptime_int = @typeInfo(FixedWindowObject).@"enum".field_names.len;
 
 pub const Connection = struct {
     sink: x11.RequestSink,
@@ -95,39 +89,39 @@ pub const Connection = struct {
         @panic("todo");
     }
     fn staticWindowFromX11Id(self: *const Connection, window: x11.Window) ?zin.StaticWindowId {
-        const off = self.id_range.offset(@enumFromInt(@intFromEnum(window))) orelse return null;
+        const off = self.id_range.offset(@fromBackingInt(@intCast(@backingInt(window)))) orelse return null;
         if (off >= static_window_count * fixed_ids_per_window) return null;
-        return @enumFromInt(@divTrunc(off, fixed_ids_per_window));
+        return @fromBackingInt(@intCast(@divTrunc(off, fixed_ids_per_window)));
     }
     fn drawableFromX11Id(self: *const Connection, id: u32) union(enum) {
         not_drawable,
         static_window: zin.StaticWindowId,
         static_pixmap: zin.StaticWindowId,
     } {
-        const off = self.id_range.offset(@enumFromInt(id)) orelse return .not_drawable;
+        const off = self.id_range.offset(@fromBackingInt(@intCast(id))) orelse return .not_drawable;
         if (off >= static_window_count * fixed_ids_per_window) return .not_drawable;
-        return switch (@as(FixedWindowObject, @enumFromInt(off % fixed_ids_per_window))) {
-            .window => .{ .static_window = @enumFromInt(@divTrunc(off, fixed_ids_per_window)) },
+        return switch (@as(FixedWindowObject, @fromBackingInt(@intCast(off % fixed_ids_per_window)))) {
+            .window => .{ .static_window = @fromBackingInt(@intCast(@divTrunc(off, fixed_ids_per_window))) },
             .graphics_context => .not_drawable,
-            .pixmap_0, .pixmap_1 => .{ .static_pixmap = @enumFromInt(@divTrunc(off, fixed_ids_per_window)) },
+            .pixmap_0, .pixmap_1 => .{ .static_pixmap = @fromBackingInt(@intCast(@divTrunc(off, fixed_ids_per_window))) },
             .present_event => .not_drawable,
         };
     }
 
     pub fn staticWindowId(self: *const Connection, id: zin.StaticWindowId) x11.Window {
-        return self.id_range.addAssumeCapacity(@as(u29, @intFromEnum(id)) * fixed_ids_per_window + @intFromEnum(FixedWindowObject.window)).window();
+        return self.id_range.addAssumeCapacity(@as(u29, @backingInt(id)) * fixed_ids_per_window + @backingInt(FixedWindowObject.window)).window();
     }
     pub fn staticWindowGc(self: *const Connection, id: zin.StaticWindowId) x11.GraphicsContext {
-        return self.id_range.addAssumeCapacity(@as(u29, @intFromEnum(id)) * fixed_ids_per_window + @intFromEnum(FixedWindowObject.graphics_context)).graphicsContext();
+        return self.id_range.addAssumeCapacity(@as(u29, @backingInt(id)) * fixed_ids_per_window + @backingInt(FixedWindowObject.graphics_context)).graphicsContext();
     }
     pub fn staticWindowPixmaps(self: *const Connection, id: zin.StaticWindowId) [2]x11.Pixmap {
         return .{
-            self.id_range.addAssumeCapacity(@as(u29, @intFromEnum(id)) * fixed_ids_per_window + @intFromEnum(FixedWindowObject.pixmap_0)).pixmap(),
-            self.id_range.addAssumeCapacity(@as(u29, @intFromEnum(id)) * fixed_ids_per_window + @intFromEnum(FixedWindowObject.pixmap_1)).pixmap(),
+            self.id_range.addAssumeCapacity(@as(u29, @backingInt(id)) * fixed_ids_per_window + @backingInt(FixedWindowObject.pixmap_0)).pixmap(),
+            self.id_range.addAssumeCapacity(@as(u29, @backingInt(id)) * fixed_ids_per_window + @backingInt(FixedWindowObject.pixmap_1)).pixmap(),
         };
     }
     pub fn staticWindowPresentEventId(self: *const Connection, id: zin.StaticWindowId) u32 {
-        return @intFromEnum(self.id_range.addAssumeCapacity(@as(u29, @intFromEnum(id)) * fixed_ids_per_window + @intFromEnum(FixedWindowObject.present_event)));
+        return @backingInt(self.id_range.addAssumeCapacity(@as(u29, @backingInt(id)) * fixed_ids_per_window + @backingInt(FixedWindowObject.present_event)));
     }
 
     pub fn reserveId(self: *Connection) ?x11.Resource {
@@ -147,40 +141,16 @@ pub const Connection = struct {
 };
 
 pub fn processInit(opt: zin.ProcessInitOptions) zin.ProcessInitError!void {
+    _ = opt;
     std.debug.assert(!global.process_init_called);
     global.process_init_called = true;
-
-    if (builtin.os.tag == .windows) {
-        if (opt.x11_wsa_startup) {
-            var data: win32.WSAData = undefined;
-            const result = win32.WSAStartup((@as(u16, 2) << 8) | 2, &data);
-            if (result != 0) {
-                log.err("WSAStartup failed, error={}", .{result});
-                return error.X11WsaStartupFailed;
-            }
-        }
-    }
-    global.display = x11.getDisplay() catch |err| switch (err) {
-        error.InvalidWtf8 => return error.X11DisplayInvalidWtf8,
-        error.OutOfMemory => return error.OutOfMemory,
-    };
-    log.info("X11 DISPLAY {f}", .{global.display});
-    global.parsed_display = x11.parseDisplay(global.display) catch |err| {
-        log.err("invalid X11 DISPLAY {f}: {s}", .{ global.display, @errorName(err) });
-        return error.X11BadDisplay;
-    };
-    global.host = x11.getHost(global.display, &global.parsed_display) catch |err| switch (err) {
-        error.X11BadDisplay => |e| {
-            log.err("invalid X11 DISPLAY {f}", .{global.display});
-            return e;
-        },
-    };
 }
 
 pub const ConnectError = union(enum) {
     connect_error: x11.ConnectError,
-    recv_error: (error{EndOfStream} || std.net.Stream.Reader.Error),
-    send_error: std.net.Stream.Writer.Error,
+    bad_display,
+    recv_error: (error{EndOfStream} || std.Io.net.Stream.Reader.Error),
+    send_error: std.Io.net.Stream.Writer.Error,
     protocol_error: enum { setup, setup_dynamic, depth, id_range, id_range_capacity, present_not_available, read_dpi, discard_dpi, keycode_range, unexpected_msg },
     cant_authenticate,
     no_screen,
@@ -192,24 +162,14 @@ pub const ConnectError = union(enum) {
 
     fn setRecv(err: *ConnectError, recv_err: error{ ReadFailed, EndOfStream }) error{X11Connect} {
         return err.set(.{ .recv_error = switch (recv_err) {
-            error.ReadFailed => global.i.socket_reader.getError() orelse error.Unexpected,
+            error.ReadFailed => global.i.socket_reader.err orelse error.Unexpected,
             error.EndOfStream => error.EndOfStream,
         } });
     }
 
-    pub const format = if (zig_atleast_15) formatNew else formatLegacy;
-    fn formatNew(err: ConnectError, writer: *std.Io.Writer) error{WriteFailed}!void {
-        try err.formatLegacy("", .{}, writer);
-    }
-    fn formatLegacy(
-        err: ConnectError,
-        comptime fmt: []const u8,
-        options: std.fmt.FormatOptions,
-        writer: anytype,
-    ) !void {
-        _ = fmt;
-        _ = options;
+    pub fn format(err: ConnectError, writer: *std.Io.Writer) error{WriteFailed}!void {
         switch (err) {
+            .bad_display => try writer.writeAll("bad DISPLAY"),
             .connect_error => |e| try writer.print("socket connect failed with {s}", .{@errorName(e)}),
             .recv_error => |e| try writer.print("socket receive failed with {s}", .{@errorName(e)}),
             .send_error => |e| try writer.print("socket send failed with {s}", .{@errorName(e)}),
@@ -219,7 +179,7 @@ pub const ConnectError = union(enum) {
         }
     }
 };
-pub fn connect(out_err: *ConnectError) error{X11Connect}!void {
+pub fn connect(io: std.Io, environ: std.process.Environ, out_err: *ConnectError) error{X11Connect}!void {
     std.debug.assert(global.process_init_called);
     std.debug.assert(global.conn == null);
     errdefer {
@@ -230,19 +190,33 @@ pub fn connect(out_err: *ConnectError) error{X11Connect}!void {
         global.i.socket_reader = undefined;
     }
 
+    var display_buf: [x11.max_display_len]u8 = undefined;
+    const display = x11.getDisplay(environ, &display_buf) catch |err| {
+        log.err("get X11 DISPLAY failed with {t}", .{err});
+        return out_err.set(.bad_display);
+    };
+    log.info("X11 DISPLAY {f}", .{display});
+    const parsed_display = x11.parseDisplay(display) catch |err| {
+        log.err("invalid X11 DISPLAY {f}: {t}", .{ display, err });
+        return out_err.set(.bad_display);
+    };
+    const host = x11.getHost(display, &parsed_display) catch {
+        log.err("invalid X11 DISPLAY {f}", .{display});
+        return out_err.set(.bad_display);
+    };
+
     global.i.socket_reader, global.use_auth = blk: {
-        const address, const initial_stream = x11.connect(&global.host) catch |err| {
+        const address, const initial_stream = x11.connect(io, &host) catch |err| {
             return out_err.set(.{ .connect_error = err });
         };
-        errdefer x11.disconnect(initial_stream);
-        if (zig_atleast_15)
-            log.info("connected to {f}", .{address})
-        else
-            log.info("connected to {}", .{address});
+        errdefer x11.disconnect(io, initial_stream);
+        log.info("connected to {f}", .{address});
         break :blk x11.draft.authenticate(
-            global.display,
-            &global.parsed_display,
-            &global.host,
+            io,
+            environ,
+            display,
+            &parsed_display,
+            &host,
             &address,
             initial_stream,
             &global.read_buffer,
@@ -251,14 +225,14 @@ pub fn connect(out_err: *ConnectError) error{X11Connect}!void {
             error.AuthRejected => return out_err.set(.cant_authenticate),
         };
     };
-    errdefer x11.disconnect(global.i.socket_reader.getStream());
+    errdefer x11.disconnect(io, global.i.socket_reader.stream);
 
-    global.i.setup = x11.readSetupSuccess(global.i.socket_reader.interface()) catch |err| switch (err) {
+    global.i.setup = x11.readSetupSuccess(&global.i.socket_reader.interface) catch |err| switch (err) {
         error.Protocol => return out_err.set(.{ .protocol_error = .setup }),
         error.ReadFailed, error.EndOfStream => |e| return out_err.setRecv(e),
     };
     std.log.info("setup reply {f}", .{global.i.setup});
-    var source: x11.Source = .initFinishSetup(global.i.socket_reader.interface(), &global.i.setup);
+    var source: x11.Source = .initFinishSetup(&global.i.socket_reader.interface, &global.i.setup);
 
     var on_visual_adapter: x11.draft.OnVisual = if (zin.config.x11_on_visual) |f|
         .{ .func = struct {
@@ -275,7 +249,7 @@ pub fn connect(out_err: *ConnectError) error{X11Connect}!void {
         error.Protocol => return out_err.set(.{ .protocol_error = .setup_dynamic }),
         error.ReadFailed, error.EndOfStream => |e| return out_err.setRecv(e),
     }) orelse return out_err.set(.no_screen);
-    global.i.socket_writer = x11.socketWriter(global.i.socket_reader.getStream(), &global.write_buffer);
+    global.i.socket_writer = global.i.socket_reader.stream.writer(io, &global.write_buffer);
     var sink: x11.RequestSink = .{ .writer = &global.i.socket_writer.interface };
 
     const id_range = x11.IdRange.init(global.i.setup.resource_id_base, global.i.setup.resource_id_mask) catch
@@ -370,7 +344,7 @@ pub fn disconnect() void {
     global.conn.? = undefined;
     global.conn = null;
 
-    x11.disconnect(global.i.socket_reader.getStream());
+    x11.disconnect(global.i.socket_reader.io, global.i.socket_reader.stream);
 
     global.i.socket_writer = undefined;
     global.i.screen = undefined;
@@ -382,9 +356,9 @@ const xft_dpi_prefix = "Xft.dpi:";
 fn parseXftDpi(data: []const u8) ?f32 {
     var it = std.mem.splitScalar(u8, data, '\n');
     while (it.next()) |line| {
-        const trimmed = std.mem.trimLeft(u8, line, " \t");
+        const trimmed = std.mem.trimStart(u8, line, " \t");
         if (std.mem.startsWith(u8, trimmed, xft_dpi_prefix)) {
-            const value_str = std.mem.trimLeft(u8, trimmed[xft_dpi_prefix.len..], " \t");
+            const value_str = std.mem.trimStart(u8, trimmed[xft_dpi_prefix.len..], " \t");
             return std.fmt.parseFloat(f32, value_str) catch null;
         }
     }
@@ -434,8 +408,8 @@ fn sendDpiGetProperty(sink: *x11.RequestSink) error{WriteFailed}!u16 {
 const support_key_events = true;
 
 const support_dpi_events: bool = blk: {
-    for (0..@typeInfo(zin.StaticWindowId).@"enum".fields.len) |window_id_int| {
-        const id: zin.StaticWindowId = @enumFromInt(window_id_int);
+    for (0..@typeInfo(zin.StaticWindowId).@"enum".field_names.len) |window_id_int| {
+        const id: zin.StaticWindowId = @fromBackingInt(@intCast(window_id_int));
         if (id.getConfig().dpi_events) break :blk true;
     }
     break :blk false;
@@ -492,16 +466,12 @@ const Window = struct {
     }
 };
 
-const static_window_count = @typeInfo(zin.StaticWindowId).@"enum".fields.len;
+const static_window_count = @typeInfo(zin.StaticWindowId).@"enum".field_names.len;
 
 pub const min_timer_id_int = 0;
 
 pub const global = struct {
     var process_init_called: bool = false;
-    pub var display: x11.Display = undefined;
-    pub var parsed_display: x11.ParsedDisplay = undefined;
-    pub var host: x11.Host = undefined;
-
     var use_auth: bool = true;
     var write_buffer: [zin.config.x11_write_buffer_size]u8 = undefined;
     var read_buffer: [zin.config.x11_read_buffer_size]u8 = undefined;
@@ -510,10 +480,10 @@ pub const global = struct {
     // all decls in the i namespace are guaranteed to be initialized while conn
     // is not null (after a successfull call to connect).
     pub const i = struct {
-        pub var socket_reader: std.net.Stream.Reader = undefined;
+        pub var socket_reader: std.Io.net.Stream.Reader = undefined;
         pub var setup: x11.Setup = undefined;
         pub var screen: x11.ScreenHeader = undefined;
-        pub var socket_writer: std.net.Stream.Writer = undefined;
+        pub var socket_writer: std.Io.net.Stream.Writer = undefined;
     };
 
     var static_callbacks: [static_window_count]?*const anyopaque = @splat(null);
@@ -526,14 +496,14 @@ pub const global = struct {
     pub fn onConnected() void {
         static_window_common_states = @splat(.not_created);
         inline for (0..static_window_count) |window_id_int| {
-            const state = staticWindowCustomState(@enumFromInt(window_id_int));
+            const state = staticWindowCustomState(@fromBackingInt(@intCast(window_id_int)));
             state.onConnected();
         }
     }
     pub fn onDisconnect() void {
         static_window_common_states = @splat(.not_created);
         inline for (0..static_window_count) |window_id_int| {
-            const state = staticWindowCustomState(@enumFromInt(window_id_int));
+            const state = staticWindowCustomState(@fromBackingInt(@intCast(window_id_int)));
             state.onDisconnect();
         }
     }
@@ -543,7 +513,7 @@ fn timerCount(comptime TimerId: type) usize {
     return switch (@typeInfo(TimerId)) {
         .noreturn => 0,
         .void => 1,
-        .@"enum" => |info| info.fields.len,
+        .@"enum" => |info| info.field_names.len,
         .int => @compileError("todo"),
         else => @compileError("unsupported TimerId type: " ++ @typeName(TimerId)),
     };
@@ -563,7 +533,7 @@ fn StaticWindowCustomState(window_id: zin.StaticWindowId) type {
             void = if (window_id.getConfig().window_size_events)
             .{ .x = 0, .y = 0 }
         else {},
-        timers: [timer_count]?Timer = [1]?Timer{null} ** timer_count,
+        timers: [timer_count]?Timer = @splat(null),
         presenter: ?x11.Presenter = null,
 
         pub const timer_count = timerCount(window_id.getConfig().TimerId());
@@ -581,69 +551,45 @@ fn StaticWindowCustomState(window_id: zin.StaticWindowId) type {
     };
 }
 const StaticWindowCustomStates = blk: {
-    var fields: [static_window_count]std.builtin.Type.StructField = undefined;
-    for (&fields, std.meta.fields(zin.StaticWindowId)) |*field, window_id_field| {
-        const window_id: zin.StaticWindowId = @enumFromInt(window_id_field.value);
-        field.* = .{
-            .name = window_id_field.name,
-            .type = StaticWindowCustomState(window_id),
-            .default_value_ptr = &(StaticWindowCustomState(window_id){}),
-            .is_comptime = false,
-            .alignment = @alignOf(StaticWindowCustomState(window_id)),
-        };
+    var types: [static_window_count]type = undefined;
+    var attrs: [static_window_count]std.lang.Type.Struct.FieldAttributes = undefined;
+    for (&types, &attrs, std.meta.tags(zin.StaticWindowId)) |*T, *attr, window_id| {
+        T.* = StaticWindowCustomState(window_id);
+        attr.* = .{ .default_value_ptr = &(StaticWindowCustomState(window_id){}) };
     }
-    break :blk @Type(std.builtin.Type{
-        .@"struct" = .{
-            .layout = .auto,
-            .backing_integer = null,
-            .fields = &fields,
-            .decls = &.{},
-            .is_tuple = false,
-        },
-    });
+    break :blk @Struct(.auto, null, std.meta.fieldNames(zin.StaticWindowId), &types, &attrs);
 };
 
 const StaticWindowAndTimerId = blk: {
-    var fields: [static_window_count]std.builtin.Type.UnionField = undefined;
-    for (&fields, std.meta.fields(zin.StaticWindowId)) |*field, window_id_field| {
-        const window_id: zin.StaticWindowId = @enumFromInt(window_id_field.value);
-        const TimerId = window_id.getConfig().TimerId();
-        field.* = .{
-            .name = window_id_field.name,
-            .type = TimerId,
-            .alignment = if (TimerId == noreturn) 1 else @alignOf(TimerId),
-        };
+    var types: [static_window_count]type = undefined;
+    var attrs: [static_window_count]std.lang.Type.Union.FieldAttributes = undefined;
+    for (&types, &attrs, std.meta.tags(zin.StaticWindowId)) |*T, *attr, window_id| {
+        T.* = window_id.getConfig().TimerId();
+        attr.* = .{ .@"align" = if (T.* == noreturn) 1 else null };
     }
-    break :blk @Type(std.builtin.Type{
-        .@"union" = .{
-            .layout = .auto,
-            .tag_type = zin.StaticWindowId,
-            .fields = &fields,
-            .decls = &.{},
-        },
-    });
+    break :blk @Union(.auto, zin.StaticWindowId, std.meta.fieldNames(zin.StaticWindowId), &types, &attrs);
 };
 
 const Timer = struct {
-    start: std.time.Instant,
+    start: std.Io.Timestamp,
     duration_nanos: u64,
 };
 
 /// Access the global x11 socket.
 /// This should only be called while connected (after a successfull call to connect).
-pub fn x11Socket() std.posix.socket_t {
+pub fn x11Socket() std.Io.net.Socket.Handle {
     std.debug.assert(global.conn != null);
-    return global.i.socket_reader.getStream().handle;
+    return global.i.socket_reader.stream.socket.handle;
 }
 /// Access the global socket writer.
 /// This should only be called while connected (after a successfull call to connect).
-pub fn x11SocketWriter() *std.net.Stream.Writer {
+pub fn x11SocketWriter() *std.Io.net.Stream.Writer {
     std.debug.assert(global.conn != null);
     return &global.i.socket_writer;
 }
 /// Access the global socket reader.
 /// This should only be called while connected (after a successfull call to connect).
-pub fn x11SocketReader() *std.net.Stream.Reader {
+pub fn x11SocketReader() *std.Io.net.Stream.Reader {
     std.debug.assert(global.conn != null);
     return &global.i.socket_reader;
 }
@@ -655,7 +601,7 @@ pub fn x11Source() *x11.Source {
 }
 
 fn staticCallback(comptime window_id: zin.StaticWindowId) *const fn (zin.Callback(.{ .static = window_id })) void {
-    return @ptrCast(@alignCast(global.static_callbacks[@intFromEnum(window_id)].?));
+    return @ptrCast(@alignCast(global.static_callbacks[@backingInt(window_id)].?));
 }
 
 pub fn staticWindow(window_id: zin.StaticWindowId) type {
@@ -667,7 +613,7 @@ pub fn staticWindow(window_id: zin.StaticWindowId) type {
         fn window() Window {
             return .{
                 .id = global.conn.?.staticWindowId(window_id),
-                .callback = global.static_callbacks[@intFromEnum(window_id)].?,
+                .callback = global.static_callbacks[@backingInt(window_id)].?,
             };
         }
 
@@ -676,19 +622,19 @@ pub fn staticWindow(window_id: zin.StaticWindowId) type {
             runtime_config: zin.WindowClassRuntimeConfig,
         ) void {
             _ = runtime_config;
-            std.debug.assert(global.static_callbacks[@intFromEnum(window_id)] == null);
-            global.static_callbacks[@intFromEnum(window_id)] = @ptrCast(def.callback);
+            std.debug.assert(global.static_callbacks[@backingInt(window_id)] == null);
+            global.static_callbacks[@backingInt(window_id)] = @ptrCast(def.callback);
         }
         pub fn unregisterClass() void {
-            std.debug.assert(global.static_callbacks[@intFromEnum(window_id)] != null);
-            global.static_callbacks[@intFromEnum(window_id)] = null;
+            std.debug.assert(global.static_callbacks[@backingInt(window_id)] != null);
+            global.static_callbacks[@backingInt(window_id)] = null;
         }
         pub fn create(opt: zin.CreateWindowOptions) zin.CreateWindowError!void {
             //std.debug.assert(global.static_windows[@intFromEnum(window_id)] == null);
             const bg = global.conn.?.x11FromRgb(config.data().background);
             const size = windowPixelSizeFromInit(opt.size, global.conn.?.dpi_scale);
             try createWindow(&config.data(), size, opt.pos, bg, global.conn.?.staticWindowId(window_id), &opt.platform);
-            global.static_window_common_states[@intFromEnum(window_id)] = .{ .created = .{
+            global.static_window_common_states[@backingInt(window_id)] = .{ .created = .{
                 .damaged = false,
             } };
             if (window_id.getConfig().window_size_events) {
@@ -696,7 +642,7 @@ pub fn staticWindow(window_id: zin.StaticWindowId) type {
             }
         }
         pub fn destroy() void {
-            switch (global.static_window_common_states[@intFromEnum(window_id)]) {
+            switch (global.static_window_common_states[@backingInt(window_id)]) {
                 .not_created => @panic("destroy called on windows that's not created"),
                 .created => {},
             }
@@ -722,7 +668,7 @@ pub fn staticWindow(window_id: zin.StaticWindowId) type {
                     global.conn.?.staticWindowId(window_id),
                 ) catch |e| global.conn.?.setWriteError(e);
             }
-            global.static_window_common_states[@intFromEnum(window_id)] = .not_created;
+            global.static_window_common_states[@backingInt(window_id)] = .not_created;
             global.staticWindowCustomState(window_id).onDestroyed();
         }
         pub fn getClientSize() zin.XY {
@@ -737,7 +683,7 @@ pub fn staticWindow(window_id: zin.StaticWindowId) type {
             // global.static_windows[@intFromEnum(window_id)].?.foreground();
         }
         pub fn invalidate() void {
-            switch (global.static_window_common_states[@intFromEnum(window_id)]) {
+            switch (global.static_window_common_states[@backingInt(window_id)]) {
                 .not_created => {},
                 .created => |*created| created.damaged = true,
             }
@@ -748,7 +694,7 @@ pub fn staticWindow(window_id: zin.StaticWindowId) type {
         pub fn startTimerNanos(id: window_id.getConfig().TimerId(), nanos: u64) void {
             const timers = &global.staticWindowCustomState(window_id).timers;
             timers[zin.intFromTimerId(usize, window_id.getConfig().TimerId(), id)] = .{
-                .start = std.time.Instant.now() catch unreachable,
+                .start = .now(global.i.socket_reader.io, .awake),
                 .duration_nanos = nanos,
             };
         }
@@ -756,7 +702,7 @@ pub fn staticWindow(window_id: zin.StaticWindowId) type {
 }
 
 pub fn gcFromWindow(id: x11.Window) x11.GraphicsContext {
-    const off = global.conn.?.id_range.offset(@enumFromInt(@intFromEnum(id))).?;
+    const off = global.conn.?.id_range.offset(@fromBackingInt(@intCast(@backingInt(id)))).?;
     return global.conn.?.id_range.addAssumeCapacity(off + 1).graphicsContext();
 }
 fn windowPixelSizeFromInit(init: zin.WindowSizeInit, dpi_scale: DpiScale) zin.XY {
@@ -779,7 +725,7 @@ fn windowPixelSizeFromInit(init: zin.WindowSizeInit, dpi_scale: DpiScale) zin.XY
 
 pub fn createDynamicWindow(class: WindowClass, opt: zin.CreateWindowOptions) zin.CreateWindowError!DynamicWindow {
     const window_id = (global.conn.?.reserveId() orelse return error.OutOfIds).window();
-    errdefer global.conn.?.releaseId(@enumFromInt(@intFromEnum(window_id)));
+    errdefer global.conn.?.releaseId(@fromBackingInt(@intCast(@backingInt(window_id))));
     //const bg = x11FromRgb((zin.WindowConfig{ .static = window_id }).data().background);
     if (true) @panic("todo: get the background from the window config");
     try createWindow(&opt, window_id);
@@ -873,77 +819,77 @@ pub fn clampFromI32(comptime T: type, i: i32) T {
 }
 
 pub const VirtualKey = enum(u16) {
-    backspace = @intFromEnum(x11.charset.Combined.kbd_backspace_back_space_back_char),
-    tab = @intFromEnum(x11.charset.Combined.kbd_tab),
-    @"return" = @intFromEnum(x11.charset.Combined.kbd_return_enter),
+    backspace = @backingInt(x11.charset.Combined.kbd_backspace_back_space_back_char),
+    tab = @backingInt(x11.charset.Combined.kbd_tab),
+    @"return" = @backingInt(x11.charset.Combined.kbd_return_enter),
 
-    shift_left = @intFromEnum(x11.charset.Combined.kbd_left_shift),
-    shift_right = @intFromEnum(x11.charset.Combined.kbd_right_shift),
-    control_left = @intFromEnum(x11.charset.Combined.kbd_left_control),
-    control_right = @intFromEnum(x11.charset.Combined.kbd_right_control),
-    alt_left = @intFromEnum(x11.charset.Combined.kbd_left_alt),
-    alt_right = @intFromEnum(x11.charset.Combined.kbd_right_alt),
-    pause = @intFromEnum(x11.charset.Combined.kbd_pause_hold),
-    caps_lock = @intFromEnum(x11.charset.Combined.kbd_caps_lock),
-    escape = @intFromEnum(x11.charset.Combined.kbd_escape),
-    page_up = @intFromEnum(x11.charset.Combined.kbd_page_up),
-    page_down = @intFromEnum(x11.charset.Combined.kbd_page_down),
-    end = @intFromEnum(x11.charset.Combined.kbd_end_eol),
-    home = @intFromEnum(x11.charset.Combined.kbd_home),
-    left = @intFromEnum(x11.charset.Combined.kbd_left),
-    up = @intFromEnum(x11.charset.Combined.kbd_up),
-    right = @intFromEnum(x11.charset.Combined.kbd_right),
-    down = @intFromEnum(x11.charset.Combined.kbd_down),
-    print_screen = @intFromEnum(x11.charset.Combined._3170__3270_printscreen),
-    insert = @intFromEnum(x11.charset.Combined.kbd_insert_insert_here),
-    delete = @intFromEnum(x11.charset.Combined.kbd_delete_rubout),
-    super_left = @intFromEnum(x11.charset.Combined.kbd_left_super),
-    super_right = @intFromEnum(x11.charset.Combined.kbd_right_super),
+    shift_left = @backingInt(x11.charset.Combined.kbd_left_shift),
+    shift_right = @backingInt(x11.charset.Combined.kbd_right_shift),
+    control_left = @backingInt(x11.charset.Combined.kbd_left_control),
+    control_right = @backingInt(x11.charset.Combined.kbd_right_control),
+    alt_left = @backingInt(x11.charset.Combined.kbd_left_alt),
+    alt_right = @backingInt(x11.charset.Combined.kbd_right_alt),
+    pause = @backingInt(x11.charset.Combined.kbd_pause_hold),
+    caps_lock = @backingInt(x11.charset.Combined.kbd_caps_lock),
+    escape = @backingInt(x11.charset.Combined.kbd_escape),
+    page_up = @backingInt(x11.charset.Combined.kbd_page_up),
+    page_down = @backingInt(x11.charset.Combined.kbd_page_down),
+    end = @backingInt(x11.charset.Combined.kbd_end_eol),
+    home = @backingInt(x11.charset.Combined.kbd_home),
+    left = @backingInt(x11.charset.Combined.kbd_left),
+    up = @backingInt(x11.charset.Combined.kbd_up),
+    right = @backingInt(x11.charset.Combined.kbd_right),
+    down = @backingInt(x11.charset.Combined.kbd_down),
+    print_screen = @backingInt(x11.charset.Combined._3170__3270_printscreen),
+    insert = @backingInt(x11.charset.Combined.kbd_insert_insert_here),
+    delete = @backingInt(x11.charset.Combined.kbd_delete_rubout),
+    super_left = @backingInt(x11.charset.Combined.kbd_left_super),
+    super_right = @backingInt(x11.charset.Combined.kbd_right_super),
 
-    numpad0 = @intFromEnum(x11.charset.Combined.kbd_keypad_digit_zero),
-    numpad1 = @intFromEnum(x11.charset.Combined.kbd_keypad_digit_one),
-    numpad2 = @intFromEnum(x11.charset.Combined.kbd_keypad_digit_two),
-    numpad3 = @intFromEnum(x11.charset.Combined.kbd_keypad_digit_three),
-    numpad4 = @intFromEnum(x11.charset.Combined.kbd_keypad_digit_four),
-    numpad5 = @intFromEnum(x11.charset.Combined.kbd_keypad_digit_five),
-    numpad6 = @intFromEnum(x11.charset.Combined.kbd_keypad_digit_six),
-    numpad7 = @intFromEnum(x11.charset.Combined.kbd_keypad_digit_seven),
-    numpad8 = @intFromEnum(x11.charset.Combined.kbd_keypad_digit_eight),
-    numpad9 = @intFromEnum(x11.charset.Combined.kbd_keypad_digit_nine),
+    numpad0 = @backingInt(x11.charset.Combined.kbd_keypad_digit_zero),
+    numpad1 = @backingInt(x11.charset.Combined.kbd_keypad_digit_one),
+    numpad2 = @backingInt(x11.charset.Combined.kbd_keypad_digit_two),
+    numpad3 = @backingInt(x11.charset.Combined.kbd_keypad_digit_three),
+    numpad4 = @backingInt(x11.charset.Combined.kbd_keypad_digit_four),
+    numpad5 = @backingInt(x11.charset.Combined.kbd_keypad_digit_five),
+    numpad6 = @backingInt(x11.charset.Combined.kbd_keypad_digit_six),
+    numpad7 = @backingInt(x11.charset.Combined.kbd_keypad_digit_seven),
+    numpad8 = @backingInt(x11.charset.Combined.kbd_keypad_digit_eight),
+    numpad9 = @backingInt(x11.charset.Combined.kbd_keypad_digit_nine),
 
-    multiply = @intFromEnum(x11.charset.Combined.kbd_keypad_multiplication_sign_asterisk),
-    add = @intFromEnum(x11.charset.Combined.kbd_keypad_plus_sign),
-    separator = @intFromEnum(x11.charset.Combined.kbd_keypad_separator_comma),
-    subtract = @intFromEnum(x11.charset.Combined.kbd_keypad_minus_sign_hyphen),
-    decimal = @intFromEnum(x11.charset.Combined.kbd_keypad_decimal_point_period),
+    multiply = @backingInt(x11.charset.Combined.kbd_keypad_multiplication_sign_asterisk),
+    add = @backingInt(x11.charset.Combined.kbd_keypad_plus_sign),
+    separator = @backingInt(x11.charset.Combined.kbd_keypad_separator_comma),
+    subtract = @backingInt(x11.charset.Combined.kbd_keypad_minus_sign_hyphen),
+    decimal = @backingInt(x11.charset.Combined.kbd_keypad_decimal_point_period),
 
-    f1 = @intFromEnum(x11.charset.Combined.kbd_f1),
-    f2 = @intFromEnum(x11.charset.Combined.kbd_f2),
-    f3 = @intFromEnum(x11.charset.Combined.kbd_f3),
-    f4 = @intFromEnum(x11.charset.Combined.kbd_f4),
-    f5 = @intFromEnum(x11.charset.Combined.kbd_f5),
-    f6 = @intFromEnum(x11.charset.Combined.kbd_f6),
-    f7 = @intFromEnum(x11.charset.Combined.kbd_f7),
-    f8 = @intFromEnum(x11.charset.Combined.kbd_f8),
-    f9 = @intFromEnum(x11.charset.Combined.kbd_f9),
-    f10 = @intFromEnum(x11.charset.Combined.kbd_f10),
-    f11 = @intFromEnum(x11.charset.Combined.kbd_f11_l1),
-    f12 = @intFromEnum(x11.charset.Combined.kbd_f12_l2),
-    f13 = @intFromEnum(x11.charset.Combined.kbd_f13_l3),
-    f14 = @intFromEnum(x11.charset.Combined.kbd_f14_l4),
-    f15 = @intFromEnum(x11.charset.Combined.kbd_f15_l5),
-    f16 = @intFromEnum(x11.charset.Combined.kbd_f16_l6),
-    f17 = @intFromEnum(x11.charset.Combined.kbd_f17_l7),
-    f18 = @intFromEnum(x11.charset.Combined.kbd_f18_l8),
-    f19 = @intFromEnum(x11.charset.Combined.kbd_f19_l9),
-    f20 = @intFromEnum(x11.charset.Combined.kbd_f20_l10),
-    f21 = @intFromEnum(x11.charset.Combined.kbd_f21_r1),
-    f22 = @intFromEnum(x11.charset.Combined.kbd_f22_r2),
-    f23 = @intFromEnum(x11.charset.Combined.kbd_f23_r3),
-    f24 = @intFromEnum(x11.charset.Combined.kbd_f24_r4),
+    f1 = @backingInt(x11.charset.Combined.kbd_f1),
+    f2 = @backingInt(x11.charset.Combined.kbd_f2),
+    f3 = @backingInt(x11.charset.Combined.kbd_f3),
+    f4 = @backingInt(x11.charset.Combined.kbd_f4),
+    f5 = @backingInt(x11.charset.Combined.kbd_f5),
+    f6 = @backingInt(x11.charset.Combined.kbd_f6),
+    f7 = @backingInt(x11.charset.Combined.kbd_f7),
+    f8 = @backingInt(x11.charset.Combined.kbd_f8),
+    f9 = @backingInt(x11.charset.Combined.kbd_f9),
+    f10 = @backingInt(x11.charset.Combined.kbd_f10),
+    f11 = @backingInt(x11.charset.Combined.kbd_f11_l1),
+    f12 = @backingInt(x11.charset.Combined.kbd_f12_l2),
+    f13 = @backingInt(x11.charset.Combined.kbd_f13_l3),
+    f14 = @backingInt(x11.charset.Combined.kbd_f14_l4),
+    f15 = @backingInt(x11.charset.Combined.kbd_f15_l5),
+    f16 = @backingInt(x11.charset.Combined.kbd_f16_l6),
+    f17 = @backingInt(x11.charset.Combined.kbd_f17_l7),
+    f18 = @backingInt(x11.charset.Combined.kbd_f18_l8),
+    f19 = @backingInt(x11.charset.Combined.kbd_f19_l9),
+    f20 = @backingInt(x11.charset.Combined.kbd_f20_l10),
+    f21 = @backingInt(x11.charset.Combined.kbd_f21_r1),
+    f22 = @backingInt(x11.charset.Combined.kbd_f22_r2),
+    f23 = @backingInt(x11.charset.Combined.kbd_f23_r3),
+    f24 = @backingInt(x11.charset.Combined.kbd_f24_r4),
 
-    numlock = @intFromEnum(x11.charset.Combined.kbd_num_lock),
-    scroll_lock = @intFromEnum(x11.charset.Combined.kbd_scroll_lock),
+    numlock = @backingInt(x11.charset.Combined.kbd_num_lock),
+    scroll_lock = @backingInt(x11.charset.Combined.kbd_scroll_lock),
 
     _,
 };
@@ -951,7 +897,7 @@ pub const ScanCode = u8;
 pub const Coord = i16;
 
 pub fn asciiFromKeysym(vk: VirtualKey) ?u8 {
-    return switch (@intFromEnum(vk)) {
+    return switch (@backingInt(vk)) {
         ' '...'~' => |a| @intCast(a),
         else => null,
     };
@@ -969,7 +915,7 @@ fn mouseButtonFromMsg(detail: u8) ?zin.MouseButtonId {
 fn drawStaticWindow(comptime window_id: zin.StaticWindowId) error{WriteFailed}!enum { not_created, rendered, not_ready } {
     if (global.conn.?.write_error) |e| return e;
 
-    switch (global.static_window_common_states[@intFromEnum(window_id)]) {
+    switch (global.static_window_common_states[@backingInt(window_id)]) {
         .not_created => return .not_created,
         .created => {},
     }
@@ -1012,7 +958,7 @@ pub fn x11UpdateWindows() error{WriteFailed}!usize {
         .not_created => {},
         .created => |*created| {
             if (created.damaged) {
-                const static_window_id: zin.StaticWindowId = @enumFromInt(static_window_id_raw);
+                const static_window_id: zin.StaticWindowId = @fromBackingInt(@intCast(static_window_id_raw));
                 switch (static_window_id) {
                     inline else => |window_id| switch (try drawStaticWindow(window_id)) {
                         .not_created => unreachable,
@@ -1030,11 +976,11 @@ pub fn x11UpdateWindows() error{WriteFailed}!usize {
     return update_count;
 }
 
-fn pollSocketReader(socket_reader: *std.net.Stream.Reader, timeout_nanos: ?u64) !enum { ready, timeout } {
-    if (socket_reader.interface().bufferedLen() > 0) return .ready;
+fn pollSocketReader(socket_reader: *std.Io.net.Stream.Reader, timeout_nanos: ?u64) !enum { ready, timeout } {
+    if (socket_reader.interface.bufferedLen() > 0) return .ready;
     var poll_fds = [_]std.posix.pollfd{
         .{
-            .fd = socket_reader.getStream().handle,
+            .fd = socket_reader.stream.socket.handle,
             .events = std.posix.POLL.IN,
             .revents = 0,
         },
@@ -1063,9 +1009,9 @@ const Timeout = union(enum) {
 fn minTimeoutNanos(maybe_previous: ?u64, nanos: u64) u64 {
     return @min(maybe_previous orelse return nanos, nanos);
 }
-fn resolveNow(maybe_now_ref: *?std.time.Instant) std.time.Instant {
+fn resolveNow(maybe_now_ref: *?std.Io.Timestamp) std.Io.Timestamp {
     if (maybe_now_ref.* == null) {
-        maybe_now_ref.* = std.time.Instant.now() catch unreachable;
+        maybe_now_ref.* = .now(global.i.socket_reader.io, .awake);
     }
     return maybe_now_ref.*.?;
 }
@@ -1077,14 +1023,13 @@ fn debugPanic(comptime fmt: []const u8, args: anytype) void {
     }
 }
 
-fn getTimerMinTimeout(maybe_now_ref: *?std.time.Instant) Timeout {
+fn getTimerMinTimeout(maybe_now_ref: *?std.Io.Timestamp) Timeout {
     var maybe_min_nanos: ?u64 = null;
-    inline for (std.meta.fields(zin.StaticWindowId)) |field| {
-        const window_id: zin.StaticWindowId = @enumFromInt(field.value);
+    inline for (comptime std.meta.tags(zin.StaticWindowId)) |window_id| {
         const timers = &global.staticWindowCustomState(window_id).timers;
         for (timers, 0..) |maybe_timer, timer_index| {
             const timer = maybe_timer orelse continue;
-            const diff_nanos: u64 = resolveNow(maybe_now_ref).since(timer.start);
+            const diff_nanos: u64 = @intCast(timer.start.durationTo(resolveNow(maybe_now_ref)).toNanoseconds());
             const TimerId = window_id.getConfig().TimerId();
             if (diff_nanos >= timer.duration_nanos) {
                 timers[timer_index].?.start = maybe_now_ref.*.?;
@@ -1105,7 +1050,7 @@ fn drainSocket() !enum { end_of_stream, handled_messages, no_messages } {
                     log.info("X11 connection closed (EndOfStream)", .{});
                     return .end_of_stream;
                 },
-                else => |e| switch (global.i.socket_reader.getError() orelse e) {
+                else => |e| switch (global.i.socket_reader.err orelse e) {
                     error.ConnectionResetByPeer => {
                         log.info("X11 connection closed (ConnectionReset)", .{});
                         return .end_of_stream;
@@ -1131,7 +1076,7 @@ pub fn mainLoop() !void {
             .no_messages => {},
         }
 
-        var maybe_now: ?std.time.Instant = null;
+        var maybe_now: ?std.Io.Timestamp = null;
         const timer: union(enum) {
             expired: StaticWindowAndTimerId,
             wait_nanos: ?u64,
@@ -1151,7 +1096,7 @@ pub fn mainLoop() !void {
                 switch (try pollSocketReader(&global.i.socket_reader, timeout_nanos)) {
                     .ready => continue,
                     .timeout => {
-                        var new_now: ?std.time.Instant = null;
+                        var new_now: ?std.Io.Timestamp = null;
                         break :blk_expired switch (getTimerMinTimeout(&new_now)) {
                             .none => unreachable,
                             .nanos => unreachable,
@@ -1176,14 +1121,15 @@ pub fn mainLoop() !void {
 }
 pub fn quitMainLoop() void {
     if (global.conn != null) {
-        std.posix.shutdown(global.i.socket_reader.getStream().handle, .both) catch |err| switch (err) {
-            error.BlockingOperationInProgress => unreachable,
+        const reader = &global.i.socket_reader;
+        reader.stream.shutdown(reader.io, .both) catch |err| switch (err) {
             error.SystemResources,
-            error.NetworkSubsystemFailed,
+            error.NetworkDown,
             error.Unexpected,
+            error.Canceled,
             => |e| std.debug.panic("shutdown failed with {s}", .{@errorName(e)}),
             error.ConnectionResetByPeer,
-            error.SocketNotConnected,
+            error.SocketUnconnected,
             error.ConnectionAborted,
             => {},
         };
@@ -1234,7 +1180,7 @@ pub fn x11HandleMessage(source: *x11.Source, msg_kind: x11.ServerMsgKind) !void 
                             global.conn.?.dpi_scale = .{ .val = scale };
                             if (old.val != scale) {
                                 inline for (0..static_window_count) |window_id_int| {
-                                    const window_id: zin.StaticWindowId = @enumFromInt(window_id_int);
+                                    const window_id: zin.StaticWindowId = @fromBackingInt(@intCast(window_id_int));
                                     if (window_id.getConfig().dpi_events) {
                                         staticCallback(window_id)(.dpi_change);
                                     }
@@ -1381,7 +1327,7 @@ pub fn x11HandleMessage(source: *x11.Source, msg_kind: x11.ServerMsgKind) !void 
         .Expose => {
             const expose = try source.read2(.Expose);
             if (global.conn.?.staticWindowFromX11Id(expose.window)) |w| switch (w) {
-                inline else => |window_id| switch (global.static_window_common_states[@intFromEnum(window_id)]) {
+                inline else => |window_id| switch (global.static_window_common_states[@backingInt(window_id)]) {
                     .not_created => {},
                     .created => |*created| created.damaged = true,
                 },
@@ -1401,7 +1347,7 @@ pub fn x11HandleMessage(source: *x11.Source, msg_kind: x11.ServerMsgKind) !void 
         .DestroyNotify => {
             const msg = try source.read2(.DestroyNotify);
             if (global.conn.?.staticWindowFromX11Id(msg.window)) |window_id| {
-                switch (global.static_window_common_states[@intFromEnum(window_id)]) {
+                switch (global.static_window_common_states[@backingInt(window_id)]) {
                     .not_created => {}, // ok, means the user must have closed the window
                     .created => @panic("todo: notify app that a window was destroyed"),
                 }
@@ -1432,7 +1378,7 @@ pub fn x11HandleMessage(source: *x11.Source, msg_kind: x11.ServerMsgKind) !void 
             if (event.isPresentCompleteNotify(global.conn.?.present_opcode_base)) {
                 const complete = try source.read3Full(.present_CompleteNotify);
                 inline for (0..static_window_count) |window_id_int| {
-                    const wid: zin.StaticWindowId = @enumFromInt(window_id_int);
+                    const wid: zin.StaticWindowId = @fromBackingInt(@intCast(window_id_int));
                     const state = global.staticWindowCustomState(wid);
                     if (state.presenter != null) {
                         if (state.presenter.?.handleCompleteNotify(complete) catch |e| return e) break;
@@ -1444,7 +1390,7 @@ pub fn x11HandleMessage(source: *x11.Source, msg_kind: x11.ServerMsgKind) !void 
             } else if (event.isPresentIdleNotify(global.conn.?.present_opcode_base)) {
                 const idle = try source.read3Full(.present_IdleNotify);
                 inline for (0..static_window_count) |window_id_int| {
-                    const wid: zin.StaticWindowId = @enumFromInt(window_id_int);
+                    const wid: zin.StaticWindowId = @fromBackingInt(@intCast(window_id_int));
                     const state = global.staticWindowCustomState(wid);
                     if (state.presenter != null) {
                         if (state.presenter.?.handleIdleNotify(idle) catch |e| return e) break;
@@ -1461,7 +1407,7 @@ pub fn x11HandleMessage(source: *x11.Source, msg_kind: x11.ServerMsgKind) !void 
         .PropertyNotify => {
             const event = try source.read2(.PropertyNotify);
             if (support_dpi_events) {
-                if (@intFromEnum(event.window) == @intFromEnum(global.i.screen.root) and event.atom == .RESOURCE_MANAGER) {
+                if (@backingInt(event.window) == @backingInt(global.i.screen.root) and event.atom == .RESOURCE_MANAGER) {
                     global.conn.?.dpi_get_property_sequence = sendDpiGetProperty(&global.conn.?.sink) catch |e| {
                         global.conn.?.setWriteError(e);
                         return e;
@@ -1485,7 +1431,7 @@ fn keyFromX11(direction: enum { up, down }, keycode: u8, mask: x11.KeyButtonMask
             .up => .up,
             .down => .down,
         },
-        .vk = @enumFromInt(@intFromEnum(keysym)),
+        .vk = @fromBackingInt(@intCast(@backingInt(keysym))),
         .scan_code = keycode,
         .win32_extended = {},
         .x11_mask = mask,

@@ -4,8 +4,6 @@ const zin = @import("zin.zig");
 pub const win32 = @import("win32").everything;
 const windowmsg = @import("windowmsg.zig");
 
-const zig_atleast_15 = builtin.zig_version.order(.{ .major = 0, .minor = 15, .patch = 0 }) != .lt;
-
 threadlocal var thread_is_panicing = false;
 pub fn panic(panic_opt: zin.PanicOptions) type {
     return std.debug.FullPanic(struct {
@@ -17,12 +15,12 @@ pub fn panic(panic_opt: zin.PanicOptions) type {
                 thread_is_panicing = true;
                 var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
                 const oom_msg = "allocate error message failed";
-                const msg_z: [:0]const u8 = if (zig_atleast_15) std.fmt.allocPrintSentinel(
+                const msg_z: [:0]const u8 = std.fmt.allocPrintSentinel(
                     arena.allocator(),
                     "{s}",
                     .{msg},
                     0,
-                ) catch oom_msg else std.fmt.allocPrintZ(arena.allocator(), "{s}", .{msg}) catch oom_msg;
+                ) catch oom_msg;
                 _ = @import("win32").everything.MessageBoxA(null, msg_z, panic_opt.title, panic_opt.win32_style);
             }
             std.debug.defaultPanic(msg, ret_addr);
@@ -35,9 +33,9 @@ pub fn processInit(opt: zin.ProcessInitOptions) zin.ProcessInitError!void {
     var awareness: win32.PROCESS_DPI_AWARENESS = undefined;
     {
         const hr = win32.GetProcessDpiAwareness(null, &awareness);
-        if (hr < 0) std.debug.panic(
-            "GetProcessDpiAwareness failed, hresult=0x{x}",
-            .{@as(u32, @bitCast(hr))},
+        if (hr.failed) std.debug.panic(
+            "GetProcessDpiAwareness failed, hresult={f}",
+            .{hr},
         );
     }
     switch (awareness) {
@@ -110,7 +108,7 @@ pub const DynamicWindow = Window;
 const Window = enum(usize) {
     _,
     fn asHwnd(self: Window) win32.HWND {
-        return @ptrFromInt(@intFromEnum(self));
+        return @ptrFromInt(@backingInt(self));
     }
     pub fn destroy(self: Window) void {
         if (0 == win32.DestroyWindow(self.asHwnd())) win32.panicWin32(
@@ -123,7 +121,7 @@ const Window = enum(usize) {
         return .{ .x = size.cx, .y = size.cy };
     }
     pub fn show(self: Window) void {
-        _ = win32.ShowWindow(self.asHwnd(), .{ .SHOWNORMAL = 1 });
+        _ = win32.ShowWindow(self.asHwnd(), .SHOWNORMAL);
     }
     pub fn foreground(self: Window) void {
         if (0 == win32.SetForegroundWindow(self.asHwnd()))
@@ -142,7 +140,7 @@ const Window = enum(usize) {
 };
 
 fn windowFromHwnd(hwnd: win32.HWND) Window {
-    return @enumFromInt(@intFromPtr(hwnd));
+    return @fromBackingInt(@intCast(@intFromPtr(hwnd)));
 }
 
 pub const max_window_title = 1000;
@@ -153,7 +151,7 @@ pub fn calcTitleLen(title: []const u8) usize {
     );
 }
 
-const static_window_count = @typeInfo(zin.StaticWindowId).@"enum".fields.len;
+const static_window_count = @typeInfo(zin.StaticWindowId).@"enum".field_names.len;
 const global = struct {
     var static_classes: [static_window_count]?WindowClass = @splat(null);
     var static_windows: [static_window_count]?Window = @splat(null);
@@ -164,53 +162,53 @@ pub fn staticWindow(comptime window_id: zin.StaticWindowId) type {
         const Self = @This();
 
         pub fn handle() win32.HWND {
-            return global.static_windows[@intFromEnum(window_id)].?.asHwnd();
+            return global.static_windows[@backingInt(window_id)].?.asHwnd();
         }
 
         pub fn registerClass(
             comptime def: zin.WindowClassDefinition(.{ .static = window_id }),
             config: zin.WindowClassRuntimeConfig,
         ) void {
-            std.debug.assert(global.static_classes[@intFromEnum(window_id)] == null);
-            global.static_classes[@intFromEnum(window_id)] = registerWindowClass(.{ .static = window_id }, def, config);
+            std.debug.assert(global.static_classes[@backingInt(window_id)] == null);
+            global.static_classes[@backingInt(window_id)] = registerWindowClass(.{ .static = window_id }, def, config);
         }
         pub fn unregisterClass() void {
-            global.static_classes[@intFromEnum(window_id)].?.unregister();
+            global.static_classes[@backingInt(window_id)].?.unregister();
         }
         pub fn create(opt: zin.CreateWindowOptions) zin.CreateWindowError!void {
-            std.debug.assert(global.static_windows[@intFromEnum(window_id)] == null);
+            std.debug.assert(global.static_windows[@backingInt(window_id)] == null);
             const hwnd = try createWindow(
-                global.static_classes[@intFromEnum(window_id)] orelse zin.debugPanicOrUnreachable(
+                global.static_classes[@backingInt(window_id)] orelse zin.debugPanicOrUnreachable(
                     "registerClass was not called for static window '{s}'",
                     .{@tagName(window_id)},
                 ),
                 &opt,
             );
-            std.debug.assert(global.static_windows[@intFromEnum(window_id)] == windowFromHwnd(hwnd));
+            std.debug.assert(global.static_windows[@backingInt(window_id)] == windowFromHwnd(hwnd));
         }
         pub fn destroy() void {
-            global.static_windows[@intFromEnum(window_id)].?.destroy();
+            global.static_windows[@backingInt(window_id)].?.destroy();
         }
         pub fn getClientSize() zin.XY {
-            return global.static_windows[@intFromEnum(window_id)].?.getClientSize();
+            return global.static_windows[@backingInt(window_id)].?.getClientSize();
         }
         pub fn show() void {
-            global.static_windows[@intFromEnum(window_id)].?.show();
+            global.static_windows[@backingInt(window_id)].?.show();
         }
         pub fn foreground() void {
-            global.static_windows[@intFromEnum(window_id)].?.foreground();
+            global.static_windows[@backingInt(window_id)].?.foreground();
         }
         pub fn invalidate() void {
-            global.static_windows[@intFromEnum(window_id)].?.invalidate();
+            global.static_windows[@backingInt(window_id)].?.invalidate();
         }
         pub fn startTimerMillis(id: window_id.getConfig().TimerId(), millis: u32) void {
-            global.static_windows[@intFromEnum(window_id)].?.startTimerMillis(
+            global.static_windows[@backingInt(window_id)].?.startTimerMillis(
                 zin.intFromTimerId(usize, window_id.getConfig().TimerId(), id),
                 millis,
             );
         }
         pub fn startTimerNanos(id: window_id.getConfig().TimerId(), nanos: u64) void {
-            global.static_windows[@intFromEnum(window_id)].?.startTimerNanos(
+            global.static_windows[@backingInt(window_id)].?.startTimerNanos(
                 zin.intFromTimerId(usize, window_id.getConfig().TimerId(), id),
                 nanos,
             );
@@ -350,121 +348,121 @@ pub fn mainLoop() !void {
 
 pub const VirtualKey = enum(u16) {
     // Mouse buttons
-    left_button = @intFromEnum(win32.VK_LBUTTON),
-    right_button = @intFromEnum(win32.VK_RBUTTON),
-    cancel = @intFromEnum(win32.VK_CANCEL),
-    middle_button = @intFromEnum(win32.VK_MBUTTON),
-    xbutton1 = @intFromEnum(win32.VK_XBUTTON1),
-    xbutton2 = @intFromEnum(win32.VK_XBUTTON2),
+    left_button = @backingInt(win32.VK_LBUTTON),
+    right_button = @backingInt(win32.VK_RBUTTON),
+    cancel = @backingInt(win32.VK_CANCEL),
+    middle_button = @backingInt(win32.VK_MBUTTON),
+    xbutton1 = @backingInt(win32.VK_XBUTTON1),
+    xbutton2 = @backingInt(win32.VK_XBUTTON2),
 
     // Basic keys
-    backspace = @intFromEnum(win32.VK_BACK),
-    tab = @intFromEnum(win32.VK_TAB),
-    clear = @intFromEnum(win32.VK_CLEAR),
-    @"return" = @intFromEnum(win32.VK_RETURN),
+    backspace = @backingInt(win32.VK_BACK),
+    tab = @backingInt(win32.VK_TAB),
+    clear = @backingInt(win32.VK_CLEAR),
+    @"return" = @backingInt(win32.VK_RETURN),
 
     // Modifier keys
     // NOTE: we always map VK_SHIFT to either shift_left or shift_right
-    shift_left = @intFromEnum(win32.VK_LSHIFT),
-    shift_right = @intFromEnum(win32.VK_RSHIFT),
+    shift_left = @backingInt(win32.VK_LSHIFT),
+    shift_right = @backingInt(win32.VK_RSHIFT),
     // NOTE: we always map VK_CONTROL to either control_left or control_right
-    control_left = @intFromEnum(win32.VK_LCONTROL),
-    control_right = @intFromEnum(win32.VK_RCONTROL),
+    control_left = @backingInt(win32.VK_LCONTROL),
+    control_right = @backingInt(win32.VK_RCONTROL),
     // NOTE: we always map VK_MENU to either alt_left or alt_right
-    alt_left = @intFromEnum(win32.VK_LMENU),
-    alt_right = @intFromEnum(win32.VK_RMENU),
+    alt_left = @backingInt(win32.VK_LMENU),
+    alt_right = @backingInt(win32.VK_RMENU),
 
-    pause = @intFromEnum(win32.VK_PAUSE),
-    caps_lock = @intFromEnum(win32.VK_CAPITAL),
+    pause = @backingInt(win32.VK_PAUSE),
+    caps_lock = @backingInt(win32.VK_CAPITAL),
 
     // IME keys
-    kana = @intFromEnum(win32.VK_KANA),
-    ime_on = @intFromEnum(win32.VK_IME_ON),
-    junja = @intFromEnum(win32.VK_JUNJA),
-    final = @intFromEnum(win32.VK_FINAL),
-    hanja = @intFromEnum(win32.VK_HANJA),
-    ime_off = @intFromEnum(win32.VK_IME_OFF),
+    kana = @backingInt(win32.VK_KANA),
+    ime_on = @backingInt(win32.VK_IME_ON),
+    junja = @backingInt(win32.VK_JUNJA),
+    final = @backingInt(win32.VK_FINAL),
+    hanja = @backingInt(win32.VK_HANJA),
+    ime_off = @backingInt(win32.VK_IME_OFF),
 
-    escape = @intFromEnum(win32.VK_ESCAPE),
-    convert = @intFromEnum(win32.VK_CONVERT),
-    nonconvert = @intFromEnum(win32.VK_NONCONVERT),
-    accept = @intFromEnum(win32.VK_ACCEPT),
-    modechange = @intFromEnum(win32.VK_MODECHANGE),
+    escape = @backingInt(win32.VK_ESCAPE),
+    convert = @backingInt(win32.VK_CONVERT),
+    nonconvert = @backingInt(win32.VK_NONCONVERT),
+    accept = @backingInt(win32.VK_ACCEPT),
+    modechange = @backingInt(win32.VK_MODECHANGE),
 
     // Navigation keys
-    page_up = @intFromEnum(win32.VK_PRIOR),
-    page_down = @intFromEnum(win32.VK_NEXT),
-    end = @intFromEnum(win32.VK_END),
-    home = @intFromEnum(win32.VK_HOME),
-    left = @intFromEnum(win32.VK_LEFT),
-    up = @intFromEnum(win32.VK_UP),
-    right = @intFromEnum(win32.VK_RIGHT),
-    down = @intFromEnum(win32.VK_DOWN),
-    select = @intFromEnum(win32.VK_SELECT),
-    print = @intFromEnum(win32.VK_PRINT),
-    execute = @intFromEnum(win32.VK_EXECUTE),
-    print_screen = @intFromEnum(win32.VK_SNAPSHOT), // Print screen
-    insert = @intFromEnum(win32.VK_INSERT),
-    delete = @intFromEnum(win32.VK_DELETE),
-    help = @intFromEnum(win32.VK_HELP),
+    page_up = @backingInt(win32.VK_PRIOR),
+    page_down = @backingInt(win32.VK_NEXT),
+    end = @backingInt(win32.VK_END),
+    home = @backingInt(win32.VK_HOME),
+    left = @backingInt(win32.VK_LEFT),
+    up = @backingInt(win32.VK_UP),
+    right = @backingInt(win32.VK_RIGHT),
+    down = @backingInt(win32.VK_DOWN),
+    select = @backingInt(win32.VK_SELECT),
+    print = @backingInt(win32.VK_PRINT),
+    execute = @backingInt(win32.VK_EXECUTE),
+    print_screen = @backingInt(win32.VK_SNAPSHOT), // Print screen
+    insert = @backingInt(win32.VK_INSERT),
+    delete = @backingInt(win32.VK_DELETE),
+    help = @backingInt(win32.VK_HELP),
 
-    super_left = @intFromEnum(win32.VK_LWIN),
-    super_right = @intFromEnum(win32.VK_RWIN),
-    apps = @intFromEnum(win32.VK_APPS), // Application key
-    sleep = @intFromEnum(win32.VK_SLEEP),
+    super_left = @backingInt(win32.VK_LWIN),
+    super_right = @backingInt(win32.VK_RWIN),
+    apps = @backingInt(win32.VK_APPS), // Application key
+    sleep = @backingInt(win32.VK_SLEEP),
 
-    numpad0 = @intFromEnum(win32.VK_NUMPAD0),
-    numpad1 = @intFromEnum(win32.VK_NUMPAD1),
-    numpad2 = @intFromEnum(win32.VK_NUMPAD2),
-    numpad3 = @intFromEnum(win32.VK_NUMPAD3),
-    numpad4 = @intFromEnum(win32.VK_NUMPAD4),
-    numpad5 = @intFromEnum(win32.VK_NUMPAD5),
-    numpad6 = @intFromEnum(win32.VK_NUMPAD6),
-    numpad7 = @intFromEnum(win32.VK_NUMPAD7),
-    numpad8 = @intFromEnum(win32.VK_NUMPAD8),
-    numpad9 = @intFromEnum(win32.VK_NUMPAD9),
-    multiply = @intFromEnum(win32.VK_MULTIPLY),
-    add = @intFromEnum(win32.VK_ADD),
-    separator = @intFromEnum(win32.VK_SEPARATOR),
-    subtract = @intFromEnum(win32.VK_SUBTRACT),
-    decimal = @intFromEnum(win32.VK_DECIMAL),
-    divide = @intFromEnum(win32.VK_DIVIDE),
+    numpad0 = @backingInt(win32.VK_NUMPAD0),
+    numpad1 = @backingInt(win32.VK_NUMPAD1),
+    numpad2 = @backingInt(win32.VK_NUMPAD2),
+    numpad3 = @backingInt(win32.VK_NUMPAD3),
+    numpad4 = @backingInt(win32.VK_NUMPAD4),
+    numpad5 = @backingInt(win32.VK_NUMPAD5),
+    numpad6 = @backingInt(win32.VK_NUMPAD6),
+    numpad7 = @backingInt(win32.VK_NUMPAD7),
+    numpad8 = @backingInt(win32.VK_NUMPAD8),
+    numpad9 = @backingInt(win32.VK_NUMPAD9),
+    multiply = @backingInt(win32.VK_MULTIPLY),
+    add = @backingInt(win32.VK_ADD),
+    separator = @backingInt(win32.VK_SEPARATOR),
+    subtract = @backingInt(win32.VK_SUBTRACT),
+    decimal = @backingInt(win32.VK_DECIMAL),
+    divide = @backingInt(win32.VK_DIVIDE),
 
-    f1 = @intFromEnum(win32.VK_F1),
-    f2 = @intFromEnum(win32.VK_F2),
-    f3 = @intFromEnum(win32.VK_F3),
-    f4 = @intFromEnum(win32.VK_F4),
-    f5 = @intFromEnum(win32.VK_F5),
-    f6 = @intFromEnum(win32.VK_F6),
-    f7 = @intFromEnum(win32.VK_F7),
-    f8 = @intFromEnum(win32.VK_F8),
-    f9 = @intFromEnum(win32.VK_F9),
-    f10 = @intFromEnum(win32.VK_F10),
-    f11 = @intFromEnum(win32.VK_F11),
-    f12 = @intFromEnum(win32.VK_F12),
-    f13 = @intFromEnum(win32.VK_F13),
-    f14 = @intFromEnum(win32.VK_F14),
-    f15 = @intFromEnum(win32.VK_F15),
-    f16 = @intFromEnum(win32.VK_F16),
-    f17 = @intFromEnum(win32.VK_F17),
-    f18 = @intFromEnum(win32.VK_F18),
-    f19 = @intFromEnum(win32.VK_F19),
-    f20 = @intFromEnum(win32.VK_F20),
-    f21 = @intFromEnum(win32.VK_F21),
-    f22 = @intFromEnum(win32.VK_F22),
-    f23 = @intFromEnum(win32.VK_F23),
-    f24 = @intFromEnum(win32.VK_F24),
+    f1 = @backingInt(win32.VK_F1),
+    f2 = @backingInt(win32.VK_F2),
+    f3 = @backingInt(win32.VK_F3),
+    f4 = @backingInt(win32.VK_F4),
+    f5 = @backingInt(win32.VK_F5),
+    f6 = @backingInt(win32.VK_F6),
+    f7 = @backingInt(win32.VK_F7),
+    f8 = @backingInt(win32.VK_F8),
+    f9 = @backingInt(win32.VK_F9),
+    f10 = @backingInt(win32.VK_F10),
+    f11 = @backingInt(win32.VK_F11),
+    f12 = @backingInt(win32.VK_F12),
+    f13 = @backingInt(win32.VK_F13),
+    f14 = @backingInt(win32.VK_F14),
+    f15 = @backingInt(win32.VK_F15),
+    f16 = @backingInt(win32.VK_F16),
+    f17 = @backingInt(win32.VK_F17),
+    f18 = @backingInt(win32.VK_F18),
+    f19 = @backingInt(win32.VK_F19),
+    f20 = @backingInt(win32.VK_F20),
+    f21 = @backingInt(win32.VK_F21),
+    f22 = @backingInt(win32.VK_F22),
+    f23 = @backingInt(win32.VK_F23),
+    f24 = @backingInt(win32.VK_F24),
 
-    numlock = @intFromEnum(win32.VK_NUMLOCK),
-    scroll_lock = @intFromEnum(win32.VK_SCROLL),
+    numlock = @backingInt(win32.VK_NUMLOCK),
+    scroll_lock = @backingInt(win32.VK_SCROLL),
 
-    browser_back = @intFromEnum(win32.VK_BROWSER_BACK),
-    browser_forward = @intFromEnum(win32.VK_BROWSER_FORWARD),
-    browser_refresh = @intFromEnum(win32.VK_BROWSER_REFRESH),
-    browser_stop = @intFromEnum(win32.VK_BROWSER_STOP),
-    browser_search = @intFromEnum(win32.VK_BROWSER_SEARCH),
-    browser_favorites = @intFromEnum(win32.VK_BROWSER_FAVORITES),
-    browser_home = @intFromEnum(win32.VK_BROWSER_HOME),
+    browser_back = @backingInt(win32.VK_BROWSER_BACK),
+    browser_forward = @backingInt(win32.VK_BROWSER_FORWARD),
+    browser_refresh = @backingInt(win32.VK_BROWSER_REFRESH),
+    browser_stop = @backingInt(win32.VK_BROWSER_STOP),
+    browser_search = @backingInt(win32.VK_BROWSER_SEARCH),
+    browser_favorites = @backingInt(win32.VK_BROWSER_FAVORITES),
+    browser_home = @backingInt(win32.VK_BROWSER_HOME),
 
     // volume_mute = @intFromEnum(win32.VK_VOLUME_MUTE),
     // volume_down = @intFromEnum(win32.VK_VOLUME_DOWN),
@@ -475,41 +473,41 @@ pub const VirtualKey = enum(u16) {
     // media_stop = @intFromEnum(win32.VK_MEDIA_STOP),
     // media_play_pause = @intFromEnum(win32.VK_MEDIA_PLAY_PAUSE),
 
-    launch_mail = @intFromEnum(win32.VK_LAUNCH_MAIL),
-    launch_media_select = @intFromEnum(win32.VK_LAUNCH_MEDIA_SELECT),
-    launch_app1 = @intFromEnum(win32.VK_LAUNCH_APP1),
-    launch_app2 = @intFromEnum(win32.VK_LAUNCH_APP2),
+    launch_mail = @backingInt(win32.VK_LAUNCH_MAIL),
+    launch_media_select = @backingInt(win32.VK_LAUNCH_MEDIA_SELECT),
+    launch_app1 = @backingInt(win32.VK_LAUNCH_APP1),
+    launch_app2 = @backingInt(win32.VK_LAUNCH_APP2),
 
-    oem_1 = @intFromEnum(win32.VK_OEM_1), // Semicolon/Colon on US ANSI
-    oem_plus = @intFromEnum(win32.VK_OEM_PLUS), // Equals/Plus
-    oem_comma = @intFromEnum(win32.VK_OEM_COMMA), // Comma/Less Than
-    oem_minus = @intFromEnum(win32.VK_OEM_MINUS), // Dash/Underscore
-    oem_period = @intFromEnum(win32.VK_OEM_PERIOD), // Period/Greater Than
-    oem_2 = @intFromEnum(win32.VK_OEM_2), // Forward Slash/Question Mark on US ANSI
-    oem_3 = @intFromEnum(win32.VK_OEM_3), // Grave Accent/Tilde on US ANSI
-    oem_4 = @intFromEnum(win32.VK_OEM_4), // Left Brace on US ANSI
-    oem_5 = @intFromEnum(win32.VK_OEM_5), // Backslash/Pipe on US ANSI
-    oem_6 = @intFromEnum(win32.VK_OEM_6), // Right Brace on US ANSI
-    oem_7 = @intFromEnum(win32.VK_OEM_7), // Apostrophe/Double Quote on US ANSI
-    oem_8 = @intFromEnum(win32.VK_OEM_8), // Varies by keyboard
-    oem_102 = @intFromEnum(win32.VK_OEM_102), // Backslash/Pipe on European ISO
-    processkey = @intFromEnum(win32.VK_PROCESSKEY), // IME PROCESS key
-    packet = @intFromEnum(win32.VK_PACKET), // Used for Unicode characters as keystrokes
+    oem_1 = @backingInt(win32.VK_OEM_1), // Semicolon/Colon on US ANSI
+    oem_plus = @backingInt(win32.VK_OEM_PLUS), // Equals/Plus
+    oem_comma = @backingInt(win32.VK_OEM_COMMA), // Comma/Less Than
+    oem_minus = @backingInt(win32.VK_OEM_MINUS), // Dash/Underscore
+    oem_period = @backingInt(win32.VK_OEM_PERIOD), // Period/Greater Than
+    oem_2 = @backingInt(win32.VK_OEM_2), // Forward Slash/Question Mark on US ANSI
+    oem_3 = @backingInt(win32.VK_OEM_3), // Grave Accent/Tilde on US ANSI
+    oem_4 = @backingInt(win32.VK_OEM_4), // Left Brace on US ANSI
+    oem_5 = @backingInt(win32.VK_OEM_5), // Backslash/Pipe on US ANSI
+    oem_6 = @backingInt(win32.VK_OEM_6), // Right Brace on US ANSI
+    oem_7 = @backingInt(win32.VK_OEM_7), // Apostrophe/Double Quote on US ANSI
+    oem_8 = @backingInt(win32.VK_OEM_8), // Varies by keyboard
+    oem_102 = @backingInt(win32.VK_OEM_102), // Backslash/Pipe on European ISO
+    processkey = @backingInt(win32.VK_PROCESSKEY), // IME PROCESS key
+    packet = @backingInt(win32.VK_PACKET), // Used for Unicode characters as keystrokes
 
-    attn = @intFromEnum(win32.VK_ATTN),
-    crsel = @intFromEnum(win32.VK_CRSEL),
-    exsel = @intFromEnum(win32.VK_EXSEL),
-    ereof = @intFromEnum(win32.VK_EREOF),
-    play = @intFromEnum(win32.VK_PLAY),
-    zoom = @intFromEnum(win32.VK_ZOOM),
-    noname = @intFromEnum(win32.VK_NONAME), // Reserved
-    pa1 = @intFromEnum(win32.VK_PA1),
-    oem_clear = @intFromEnum(win32.VK_OEM_CLEAR),
+    attn = @backingInt(win32.VK_ATTN),
+    crsel = @backingInt(win32.VK_CRSEL),
+    exsel = @backingInt(win32.VK_EXSEL),
+    ereof = @backingInt(win32.VK_EREOF),
+    play = @backingInt(win32.VK_PLAY),
+    zoom = @backingInt(win32.VK_ZOOM),
+    noname = @backingInt(win32.VK_NONAME), // Reserved
+    pa1 = @backingInt(win32.VK_PA1),
+    oem_clear = @backingInt(win32.VK_OEM_CLEAR),
     _,
 
     // the following are duplicates
-    pub const hangul = @intFromEnum(win32.VK_HANGUL);
-    pub const kanji = @intFromEnum(win32.VK_KANJI);
+    pub const hangul = @backingInt(win32.VK_HANGUL);
+    pub const kanji = @backingInt(win32.VK_KANJI);
 };
 pub const ScanCode = enum(u8) {
     _,
@@ -531,16 +529,16 @@ fn keyFromWin32(direction: enum { up, down }, wparam: win32.WPARAM, lparam: win3
             .down => if (key_flags.previous) .down_repeat else .down,
         },
         .vk = switch (wparam) {
-            @intFromEnum(win32.VK_SHIFT) => switch (key_flags.scan_code) {
+            @backingInt(win32.VK_SHIFT) => switch (key_flags.scan_code) {
                 0x2a => .shift_left, // typical mapping
                 0x36 => .shift_right, // typical mapping
                 else => .shift_left, // otherwise, we'll just always map this to left shift
             },
-            @intFromEnum(win32.VK_CONTROL) => if (key_flags.extended) .control_right else .control_left,
-            @intFromEnum(win32.VK_MENU) => if (key_flags.extended) .alt_right else .alt_left,
-            else => @enumFromInt(@as(u16, @intCast(0xffff & wparam))),
+            @backingInt(win32.VK_CONTROL) => if (key_flags.extended) .control_right else .control_left,
+            @backingInt(win32.VK_MENU) => if (key_flags.extended) .alt_right else .alt_left,
+            else => @fromBackingInt(@intCast(@as(u16, @intCast(0xffff & wparam)))),
         },
-        .scan_code = @enumFromInt(key_flags.scan_code),
+        .scan_code = @fromBackingInt(@intCast(key_flags.scan_code)),
         .win32_extended = key_flags.extended,
         .x11_mask = {},
         .macos_mods = {},
@@ -595,8 +593,8 @@ pub fn makeWndProc(
                 win32.WM_CREATE => {
                     switch (config) {
                         .static => |window_id| {
-                            std.debug.assert(null == global.static_windows[@intFromEnum(window_id)]);
-                            global.static_windows[@intFromEnum(window_id)] = windowFromHwnd(hwnd);
+                            std.debug.assert(null == global.static_windows[@backingInt(window_id)]);
+                            global.static_windows[@backingInt(window_id)] = windowFromHwnd(hwnd);
                         },
                         .dynamic => {},
                     }
@@ -605,8 +603,8 @@ pub fn makeWndProc(
                 win32.WM_DESTROY => {
                     switch (config) {
                         .static => |window_id| {
-                            std.debug.assert(windowFromHwnd(hwnd) == global.static_windows[@intFromEnum(window_id)]);
-                            global.static_windows[@intFromEnum(window_id)] = null;
+                            std.debug.assert(windowFromHwnd(hwnd) == global.static_windows[@backingInt(window_id)]);
+                            global.static_windows[@backingInt(window_id)] = null;
                         },
                         .dynamic => {},
                     }
@@ -962,10 +960,8 @@ fn paint(
     }
 }
 
-fn colorrefFromRgb8(rgb8: zin.Rgb8) u32 {
-    return (@as(u32, rgb8.b) << 16) |
-        (@as(u32, rgb8.g) << 8) |
-        (@as(u32, rgb8.r) << 0);
+fn colorrefFromRgb8(rgb8: zin.Rgb8) win32.COLORREF {
+    return .rgb(rgb8.r, rgb8.g, rgb8.b);
 }
 
 comptime {
@@ -1020,7 +1016,7 @@ pub fn Draw(window_config: zin.WindowConfig) type {
         }
 
         pub fn text(self: *const Self, t: []const u8, x: i32, y: i32, rgb: zin.Rgb8) void {
-            if (win32.CLR_INVALID == win32.SetTextColor(self.hdc, colorrefFromRgb8(rgb)))
+            if (win32.COLORREF.invalid == win32.SetTextColor(self.hdc, colorrefFromRgb8(rgb)))
                 win32.panicWin32("SetTextColor", win32.GetLastError());
             if (0 == win32.TextOutA(
                 self.hdc,
