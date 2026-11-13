@@ -11,8 +11,8 @@
             .lazy = true,
         },
         .x11 = .{
-            .url = "git+https://github.com/marler8997/zigx#c36c804e6173395d392065381e82546a64725e33",
-            .hash = "x11-0.0.0-yWuw5iqHDQAmD5CzPx3k0ECPqO29nV_yz3rm7PEElEcS",
+            .url = "git+https://github.com/marler8997/zigx#2634dc94d073b3b915e4bbc9189ce47139b6b72e",
+            .hash = "x11-0.0.0-yWuw5qWWDQAizXw-IVf-p5LrMjxp-Bc7DAlf4-_j5NqH",
             .lazy = true,
         },
         .objc = .{

@@ -191,7 +191,7 @@ pub fn connect(io: std.Io, environ: std.process.Environ, out_err: *ConnectError)
     }
 
     var display_buf: [x11.max_display_len]u8 = undefined;
-    const display = x11.getDisplay(environ, &display_buf) catch |err| {
+    const display = x11.getDisplay(.init(environ), &display_buf) catch |err| {
         log.err("get X11 DISPLAY failed with {t}", .{err});
         return out_err.set(.bad_display);
     };
@@ -213,7 +213,7 @@ pub fn connect(io: std.Io, environ: std.process.Environ, out_err: *ConnectError)
         log.info("connected to {f}", .{address});
         break :blk x11.draft.authenticate(
             io,
-            environ,
+            .init(environ),
             display,
             &parsed_display,
             &host,
