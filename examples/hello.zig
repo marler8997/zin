@@ -1,9 +1,11 @@
 const builtin = @import("builtin");
 const std = @import("std");
+const build_options = @import("build_options");
 const zin = @import("zin");
 const win32 = zin.platform.win32;
 
 pub const zin_config: zin.Config = .{
+    .ThreadId = enum { main },
     .StaticWindowId = StaticWindowId,
     .x11_on_visual = x11Visual,
     // An optional callback if an x11 unhandled reply comes in.  Allows apps to
@@ -17,36 +19,42 @@ const StaticWindowId = enum {
     pub fn getConfig(self: StaticWindowId) zin.WindowConfigData {
         return switch (self) {
             .main => .{
+                .thread = .main,
                 .window_size_events = true,
                 .key_events = true,
                 .mouse_events = true,
                 .dpi_events = true,
+                .TextId = enum { press_n, mouse_buttons, weeee, mouse },
                 .timers = .one,
                 .background = .{ .r = 49, .g = 49, .b = 49 },
                 .dynamic_background = false,
-                .win32 = .{ .render = .{ .gdi = .{} } },
+                .win32 = .{ .render = if (build_options.win32_direct2d) .{ .direct2d = .{} } else .{ .gdi = .{} } },
                 .x11 = .{},
             },
             .testWin32 => .{
+                .thread = .main,
                 .window_size_events = true,
                 .key_events = false,
                 .mouse_events = false,
                 .dpi_events = false,
+                .TextId = enum { title },
                 .timers = .none,
                 .background = .{ .r = 49, .g = 49, .b = 49 },
                 .dynamic_background = false,
-                .win32 = .{ .render = .{ .gdi = .{} } },
+                .win32 = .{ .render = if (build_options.win32_direct2d) .{ .direct2d = .{} } else .{ .gdi = .{} } },
                 .x11 = .{},
             },
             .extra => .{
+                .thread = .main,
                 .window_size_events = true,
                 .key_events = false,
                 .mouse_events = false,
                 .dpi_events = false,
+                .TextId = enum { title },
                 .timers = .none,
                 .background = .{ .r = 255, .g = 0, .b = 0 },
                 .dynamic_background = true,
-                .win32 = .{ .render = .{ .gdi = .{ .use_backbuffer = false } } },
+                .win32 = .{ .render = if (build_options.win32_direct2d) .{ .direct2d = .{} } else .{ .gdi = .{ .use_backbuffer = false } } },
                 .x11 = .{},
             },
         };
@@ -78,15 +86,20 @@ pub fn main(init: std.process.Init.Minimal) !void {
     // one-time process initialization
     try zin.processInit(.{});
 
+    // one-time thread initialization on the thread servicing the UI
+    if (zin.threadInit(.main)) |err| std.debug.panic("{f}", .{err});
+    defer zin.threadDeinit(.main);
+
     {
         var err: zin.X11ConnectError = undefined;
         zin.x11Connect(
+            .main,
             std.Io.Threaded.global_single_threaded.io(),
             init.environ,
             &err,
         ) catch std.debug.panic("X11 connect failed: {f}", .{err});
     }
-    defer zin.x11Disconnect();
+    defer zin.x11Disconnect(.main);
 
     const icons = getIcons(96, 96);
 
@@ -175,7 +188,7 @@ fn callback(cb: zin.Callback(.main)) void {
             d.rect(.ltwh(animate.x, size.y - animate.y, rect_size, rect_size), .red);
             const margin_left = zin.scale(i32, 10, dpi_scale.x);
             const top = zin.scale(i32, 50, dpi_scale.y);
-            d.text("Press 'n' to open the extra window.", margin_left, top, .white);
+            d.text(.press_n, "Press 'n' to open the extra window.", margin_left, top, .white);
             {
                 var str_buf: [100]u8 = undefined;
                 const str = std.fmt.bufPrint(&str_buf, "Mouse left:{s} right:{s} middle:{s}", .{
@@ -183,11 +196,11 @@ fn callback(cb: zin.Callback(.main)) void {
                     if (global.mouse_down.right) "1" else "0",
                     if (global.mouse_down.middle) "1" else "0",
                 }) catch unreachable;
-                d.text(str, margin_left, top + zin.scale(i32, 20, dpi_scale.y), .white);
+                d.text(.mouse_buttons, str, margin_left, top + zin.scale(i32, 20, dpi_scale.y), .white);
             }
-            d.text("Weeee!!!", animate.x, animate.y, .white);
+            d.text(.weeee, "Weeee!!!", animate.x, animate.y, .white);
             if (global.mouse_position) |p| {
-                d.text("Mouse", p.x, p.y, .white);
+                d.text(.mouse, "Mouse", p.x, p.y, .white);
             }
         },
         .timer => zin.staticWindow(.main).invalidate(),
@@ -245,7 +258,7 @@ fn testWin32Callback(cb: zin.Callback(.testWin32)) void {
         .window_size => {},
         .draw => |d| {
             d.clear();
-            d.text("Test Win32 Window", 10, 10, .red);
+            d.text(.title, "Test Win32 Window", 10, 10, .red);
         },
     }
 }
@@ -262,7 +275,7 @@ fn extraCallback(cb: zin.Callback(.extra)) void {
             d.clear();
             //var buf: [100]u8 = undefined;
             //zin.text(@import("std").fmt.bufPrint(&buf, "ExtraWindow {}", .{i}), 10, 10);
-            d.text("Extra", 10, 10, .white);
+            d.text(.title, "Extra", 10, 10, .white);
         },
     }
 }

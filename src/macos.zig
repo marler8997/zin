@@ -7,10 +7,38 @@ const cg = @import("macos/cg.zig");
 const log = std.log.scoped(.macos);
 
 extern "c" fn NSApplicationLoad() c_char;
+extern "c" fn pthread_main_np() c_int;
 
 pub fn processInit(opt: zin.ProcessInitOptions) zin.ProcessInitError!void {
     _ = opt;
+    global.process_init_check.onProcessInit();
     if (0 == NSApplicationLoad()) return error.NSApplicationLoadFailed;
+}
+
+pub const ThreadInitError = struct {
+    pub fn format(err: ThreadInitError, writer: *std.Io.Writer) error{WriteFailed}!void {
+        _ = err;
+        _ = writer;
+        unreachable;
+    }
+};
+
+pub fn threadInit(id: zin.ThreadId) ?ThreadInitError {
+    global.process_init_check.enforce();
+    if (std.debug.runtime_safety and 0 == pthread_main_np()) std.debug.panic(
+        "threadInit(.{t}) was not called on the main thread, which AppKit requires",
+        .{id},
+    );
+    global.thread_init_checks[@backingInt(id)].onThreadInit(id);
+    return null;
+}
+pub fn threadDeinit(id: zin.ThreadId) void {
+    global.thread_init_checks[@backingInt(id)].onThreadDeinit(id);
+}
+/// Panics with runtime safety unless called on the thread that called
+/// threadInit with `id`.
+pub fn enforceThread(id: zin.ThreadId) void {
+    global.thread_init_checks[@backingInt(id)].enforce(id);
 }
 
 fn modalAlert(
@@ -87,6 +115,8 @@ pub const min_timer_id_int = 0;
 
 const static_window_count = @typeInfo(zin.StaticWindowId).@"enum".field_names.len;
 const global = struct {
+    var process_init_check: zin.ProcessInitCheck = .{};
+    var thread_init_checks: [@typeInfo(zin.ThreadId).@"enum".field_names.len]zin.ThreadInitCheck = @splat(.{});
     var static_classes: [static_window_count]?AnyZinView = @splat(null);
     var static_windows: [static_window_count]?NSWindow = @splat(null);
 };
@@ -419,12 +449,12 @@ pub const VirtualKey = enum(u16) {
 pub const ScanCode = void;
 
 pub fn Draw(window_id: zin.StaticWindowId) type {
-    _ = window_id;
     return struct {
         const Self = @This();
         ctx: *c.CGContext,
         client_size: zin.XY,
         window: NSWindow,
+        text_id_check: *zin.TextIdCheck(window_id.getConfig().TextId),
 
         pub fn getDpiScale(self: *const Self) struct { x: f32, y: f32 } {
             const scale: f32 = @floatCast(self.window.obj.msgSend(f64, "backingScaleFactor", .{}));
@@ -462,7 +492,8 @@ pub fn Draw(window_id: zin.StaticWindowId) type {
             c.CGContextFillRect(self.ctx, cgRectFromZin(r, self.client_size.y));
         }
 
-        pub fn text(self: *const Self, t: []const u8, x: i32, y: i32, rgb: zin.Rgb8) void {
+        pub fn text(self: *const Self, id: window_id.getConfig().TextId, t: []const u8, x: i32, y: i32, rgb: zin.Rgb8) void {
+            self.text_id_check.onText(id);
             c.CGContextSetRGBFillColor(
                 self.ctx,
                 fFrom8(rgb.r),
@@ -715,11 +746,13 @@ fn ZinView(
             // defer gc.restoreGraphicsState();
 
             const ctx = gc.CGContext();
+            var text_id_check: zin.TextIdCheck(window_id.getConfig().TextId) = .{};
             classdef.callback(.{
                 .draw = .{
                     .ctx = ctx,
                     .client_size = self.any().getClientSize(),
                     .window = self.window(),
+                    .text_id_check = &text_id_check,
                 },
             });
             c.CGContextFlush(ctx);

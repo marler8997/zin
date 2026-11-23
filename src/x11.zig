@@ -142,8 +142,28 @@ pub const Connection = struct {
 
 pub fn processInit(opt: zin.ProcessInitOptions) zin.ProcessInitError!void {
     _ = opt;
-    std.debug.assert(!global.process_init_called);
-    global.process_init_called = true;
+    global.process_init_check.onProcessInit();
+}
+pub const ThreadInitError = struct {
+    pub fn format(err: ThreadInitError, writer: *std.Io.Writer) error{WriteFailed}!void {
+        _ = err;
+        _ = writer;
+        unreachable;
+    }
+};
+
+pub fn threadInit(id: zin.ThreadId) ?ThreadInitError {
+    global.process_init_check.enforce();
+    global.thread_init_checks[@backingInt(id)].onThreadInit(id);
+    return null;
+}
+pub fn threadDeinit(id: zin.ThreadId) void {
+    global.thread_init_checks[@backingInt(id)].onThreadDeinit(id);
+}
+/// Panics with runtime safety unless called on the thread that called
+/// threadInit with `id`.
+pub fn enforceThread(id: zin.ThreadId) void {
+    global.thread_init_checks[@backingInt(id)].enforce(id);
 }
 
 pub const ConnectError = union(enum) {
@@ -179,8 +199,8 @@ pub const ConnectError = union(enum) {
         }
     }
 };
-pub fn connect(io: std.Io, environ: std.process.Environ, out_err: *ConnectError) error{X11Connect}!void {
-    std.debug.assert(global.process_init_called);
+pub fn connect(thread: zin.ThreadId, io: std.Io, environ: std.process.Environ, out_err: *ConnectError) error{X11Connect}!void {
+    enforceThread(thread);
     std.debug.assert(global.conn == null);
     errdefer {
         std.debug.assert(global.conn == null);
@@ -338,7 +358,8 @@ pub fn connect(io: std.Io, environ: std.process.Environ, out_err: *ConnectError)
 
     global.onConnected();
 }
-pub fn disconnect() void {
+pub fn disconnect(thread: zin.ThreadId) void {
+    enforceThread(thread);
     std.debug.assert(global.conn != null);
     global.onDisconnect();
     global.conn.? = undefined;
@@ -458,7 +479,8 @@ const static_window_count = @typeInfo(zin.StaticWindowId).@"enum".field_names.le
 pub const min_timer_id_int = 0;
 
 pub const global = struct {
-    var process_init_called: bool = false;
+    var process_init_check: zin.ProcessInitCheck = .{};
+    var thread_init_checks: [@typeInfo(zin.ThreadId).@"enum".field_names.len]zin.ThreadInitCheck = @splat(.{});
     var use_auth: bool = true;
     var write_buffer: [zin.config.x11_write_buffer_size]u8 = undefined;
     var read_buffer: [zin.config.x11_read_buffer_size]u8 = undefined;
@@ -916,9 +938,11 @@ fn drawStaticWindow(comptime window_id: zin.StaticWindowId) error{WriteFailed}!e
 
     const back_pixmap = state.presenter.?.beginFrame() orelse return .not_ready;
 
+    var text_id_check: zin.TextIdCheck(config.TextId) = .{};
     staticCallback(window_id)(.{ .draw = .{
         .window = window,
         .pixmap = back_pixmap,
+        .text_id_check = &text_id_check,
         .client_size = if (config.window_size_events) state.client_size else {},
         .background = if (comptime config.dynamic_background) config.background else {},
     } });
@@ -1431,6 +1455,7 @@ pub fn Draw(window_id: zin.StaticWindowId) type {
     return struct {
         window: x11.Window,
         pixmap: x11.Pixmap,
+        text_id_check: *zin.TextIdCheck(window_id.getConfig().TextId),
         client_size: if (window_id.getConfig().window_size_events) zin.XY else void,
         background: if (window_id.getConfig().dynamic_background) zin.Rgb8 else void,
 
@@ -1485,7 +1510,8 @@ pub fn Draw(window_id: zin.StaticWindowId) type {
             ) catch |e| return global.conn.?.setWriteError(e);
         }
 
-        pub fn text(self: *const Self, t: []const u8, x: i32, y: i32, rgb: zin.Rgb8) void {
+        pub fn text(self: *const Self, id: window_id.getConfig().TextId, t: []const u8, x: i32, y: i32, rgb: zin.Rgb8) void {
+            self.text_id_check.onText(id);
             if (global.conn.?.write_error != null) return;
             const slice = x11.SliceWithMaxLen(u8, [*]const u8, 254){
                 .ptr = t.ptr,

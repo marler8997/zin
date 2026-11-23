@@ -34,6 +34,7 @@ pub const X11VisualType = switch (platform_kind) {
 
 pub const Config = @import("Config.zig");
 pub const config = if (@hasDecl(root, "zin_config")) root.zin_config else .{};
+pub const ThreadId = config.ThreadId;
 pub const StaticWindowId = config.StaticWindowId;
 
 pub const L = std.unicode.utf8ToUtf16LeStringLiteral;
@@ -67,6 +68,56 @@ pub const ProcessInitError = error{
 pub const ProcessInitOptions = struct {};
 // one-time process initialization
 pub const processInit = platform.processInit;
+pub const ProcessInitCheck = struct {
+    called: if (std.debug.runtime_safety) bool else void = if (std.debug.runtime_safety) false else {},
+    pub fn onProcessInit(state: *ProcessInitCheck) void {
+        if (std.debug.runtime_safety) {
+            std.debug.assert(!state.called);
+            state.called = true;
+        }
+    }
+    pub fn enforce(state: *ProcessInitCheck) void {
+        if (std.debug.runtime_safety) {
+            std.debug.assert(state.called);
+        }
+    }
+};
+
+/// With runtime safety, remembers which OS thread called threadInit with a
+/// `ThreadId` so that later use from any other thread panics.
+pub const ThreadInitCheck = struct {
+    os_thread_id: if (std.debug.runtime_safety) ?std.Thread.Id else void = if (std.debug.runtime_safety) null else {},
+
+    pub fn onThreadInit(state: *ThreadInitCheck, id: ThreadId) void {
+        if (!std.debug.runtime_safety) return;
+        if (state.os_thread_id) |os_thread_id| std.debug.panic(
+            "threadInit(.{t}) was already called, on thread {d}",
+            .{ id, os_thread_id },
+        );
+        state.os_thread_id = std.Thread.getCurrentId();
+    }
+    pub fn onThreadDeinit(state: *ThreadInitCheck, id: ThreadId) void {
+        if (!std.debug.runtime_safety) return;
+        state.enforce(id);
+        state.os_thread_id = null;
+    }
+    pub fn enforce(state: *const ThreadInitCheck, id: ThreadId) void {
+        if (!std.debug.runtime_safety) return;
+        const current = std.Thread.getCurrentId();
+        const os_thread_id = state.os_thread_id orelse std.debug.panic(
+            "thread {d} is using zin thread .{t} before threadInit(.{t})",
+            .{ current, id, id },
+        );
+        if (current != os_thread_id) std.debug.panic(
+            "thread {d} is using zin thread .{t}, which belongs to thread {d}",
+            .{ current, id, os_thread_id },
+        );
+    }
+};
+
+pub const ThreadInitError = platform.ThreadInitError;
+pub const threadInit = platform.threadInit;
+pub const threadDeinit = platform.threadDeinit;
 
 /// For Windows, enforces that the executable is DPI-aware.  This is supposed
 /// to be configured via a manifets file embedded inside the executable so rather
@@ -83,15 +134,19 @@ pub const X11ConnectError = if (platform_kind == .x11) x11.ConnectError else str
         unreachable;
     }
 };
-/// Connects to the X11 server, for non-X11 platforms does nothing.
+/// Connects to the X11 server on `thread`, the thread that services the
+/// connection. For non-X11 platforms does nothing.
 pub const x11Connect = if (platform_kind == .x11) x11.connect else connectNoOp;
-fn connectNoOp(io: std.Io, environ: std.process.Environ, err: *X11ConnectError) error{X11Connect}!void {
+fn connectNoOp(thread: ThreadId, io: std.Io, environ: std.process.Environ, err: *X11ConnectError) error{X11Connect}!void {
+    platform.enforceThread(thread);
     _ = io;
     _ = environ;
     _ = err;
 }
 pub const x11Disconnect = if (platform_kind == .x11) x11.disconnect else disconnectNoOp;
-fn disconnectNoOp() void {}
+fn disconnectNoOp(thread: ThreadId) void {
+    platform.enforceThread(thread);
+}
 
 pub const ConnectionPtr = if (platform_kind == .x11) *Connection else void;
 
@@ -313,6 +368,8 @@ fn makeTaggedUnion(fields: []const Field) type {
 }
 
 pub const WindowConfigData = struct {
+    /// The thread that creates the window and services its events.
+    thread: ThreadId,
     window_size_events: bool,
     key_events: bool,
     mouse_events: bool,
@@ -322,6 +379,9 @@ pub const WindowConfigData = struct {
         type: type,
     },
     dpi_events: bool,
+    /// An enum with a value for each text the window draws with `Draw.text`,
+    /// which keeps what it can of that text between draws.
+    TextId: type,
     background: Rgb8,
     dynamic_background: bool,
     win32: win32.WindowConfig,
@@ -476,6 +536,23 @@ pub const CreateWindowError = error{
 };
 
 pub const Draw = platform.Draw;
+
+/// With runtime safety, panics when one paint draws two texts with the same
+/// `TextId`. A window keeps one text per id between draws, so the second
+/// would replace what was kept for the first.
+pub fn TextIdCheck(comptime TextId: type) type {
+    return struct {
+        used: if (std.debug.runtime_safety) [count]bool else void = if (std.debug.runtime_safety) @splat(false) else {},
+
+        const count = @typeInfo(TextId).@"enum".field_names.len;
+
+        pub fn onText(check: *@This(), id: TextId) void {
+            if (!std.debug.runtime_safety) return;
+            if (check.used[@backingInt(id)]) std.debug.panic("text id .{t} was drawn twice in one paint", .{id});
+            check.used[@backingInt(id)] = true;
+        }
+    };
+}
 
 pub const mainLoop = platform.mainLoop;
 pub const quitMainLoop = platform.quitMainLoop;

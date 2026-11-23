@@ -65,7 +65,7 @@ pub fn build(b: *std.Build) void {
     }
 
     const examples = b.step("examples", "Build/install all examples");
-    addExample(b, target, optimize, zin_mod, examples, "hello");
+    addExample(b, target, optimize, zin_mod, x11, examples, "hello");
 }
 
 fn addExample(
@@ -73,31 +73,40 @@ fn addExample(
     target: std.Build.ResolvedTarget,
     optimize: std.lang.OptimizeMode,
     zin_mod: *std.Build.Module,
+    x11: bool,
     examples_step: *std.Build.Step,
     name: []const u8,
 ) void {
-    const exe = b.addExecutable(.{
-        .name = name,
-        .root_module = b.createModule(.{
-            .root_source_file = b.path(b.fmt("examples/{s}.zig", .{name})),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "zin", .module = zin_mod },
-            },
-        }),
-        .win32_manifest = b.path("res/win32dpiaware.manifest"),
-    });
-    exe.root_module.addWin32ResourceFile(.{
-        .file = b.path("examples/example.rc"),
-    });
+    for ([_]bool{ false, true }) |win32_direct2d| {
+        if (win32_direct2d and (target.result.os.tag != .windows or x11)) continue;
+        const exe_name = if (win32_direct2d) b.fmt("{s}-d2d", .{name}) else name;
+        const options = b.addOptions();
+        options.addOption(bool, "win32_direct2d", win32_direct2d);
+        const exe = b.addExecutable(.{
+            .name = exe_name,
+            .root_module = b.createModule(.{
+                .root_source_file = b.path(b.fmt("examples/{s}.zig", .{name})),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{
+                    .{ .name = "zin", .module = zin_mod },
+                    .{ .name = "build_options", .module = options.createModule() },
+                },
+            }),
+            .win32_manifest = b.path("res/win32dpiaware.manifest"),
+        });
+        if (target.result.os.tag == .windows) exe.subsystem = .windows;
+        exe.root_module.addWin32ResourceFile(.{
+            .file = b.path("examples/example.rc"),
+        });
 
-    const install = b.addInstallArtifact(exe, .{});
-    b.step(b.fmt("install-{s}", .{name}), "").dependOn(&install.step);
-    examples_step.dependOn(&install.step);
+        const install = b.addInstallArtifact(exe, .{});
+        b.step(b.fmt("install-{s}", .{exe_name}), "").dependOn(&install.step);
+        examples_step.dependOn(&install.step);
 
-    const run = b.addRunArtifact(exe);
-    run.step.dependOn(&install.step);
-    run.addPassthruArgs();
-    b.step(name, "").dependOn(&run.step);
+        const run = b.addRunArtifact(exe);
+        run.step.dependOn(&install.step);
+        run.addPassthruArgs();
+        b.step(exe_name, "").dependOn(&run.step);
+    }
 }

@@ -30,6 +30,8 @@ pub fn panic(panic_opt: zin.PanicOptions) type {
 
 pub fn processInit(opt: zin.ProcessInitOptions) zin.ProcessInitError!void {
     _ = opt;
+    global.process_init_check.onProcessInit();
+
     var awareness: win32.PROCESS_DPI_AWARENESS = undefined;
     {
         const hr = win32.GetProcessDpiAwareness(null, &awareness);
@@ -45,6 +47,52 @@ pub fn processInit(opt: zin.ProcessInitOptions) zin.ProcessInitError!void {
     }
 }
 
+pub const ThreadInitError = union(enum) {
+    d2d_create_factory: win32.HRESULT,
+
+    pub fn format(err: ThreadInitError, writer: *std.Io.Writer) error{WriteFailed}!void {
+        switch (err) {
+            .d2d_create_factory => |hr| try writer.print("D2D1CreateFactory failed, hresult={f}", .{hr}),
+        }
+    }
+};
+
+pub fn threadInit(id: zin.ThreadId) ?ThreadInitError {
+    global.process_init_check.enforce();
+    const check = &global.thread_init_checks[@backingInt(id)];
+    check.onThreadInit(id);
+    switch (id) {
+        inline else => |comptime_id| if (comptime d2d_layout.factory_index[@backingInt(comptime_id)]) |index| {
+            const hr = win32.D2D1CreateFactory(
+                .SINGLE_THREADED,
+                win32.IID_ID2D1Factory,
+                null,
+                @ptrCast(&global.d2d_factories[index]),
+            );
+            if (hr.failed) {
+                check.onThreadDeinit(id);
+                return .{ .d2d_create_factory = hr };
+            }
+        },
+    }
+    return null;
+}
+pub fn threadDeinit(id: zin.ThreadId) void {
+    enforceThread(id);
+    switch (id) {
+        inline else => |comptime_id| if (comptime d2d_layout.factory_index[@backingInt(comptime_id)]) |index| {
+            _ = global.d2d_factories[index].IUnknown.Release();
+            global.d2d_factories[index] = undefined;
+        },
+    }
+    global.thread_init_checks[@backingInt(id)].onThreadDeinit(id);
+}
+/// Panics with runtime safety unless called on the thread that called
+/// threadInit with `id`.
+pub fn enforceThread(id: zin.ThreadId) void {
+    global.thread_init_checks[@backingInt(id)].enforce(id);
+}
+
 pub const min_timer_id_int = 1;
 
 pub const WindowConfig = struct {
@@ -52,6 +100,7 @@ pub const WindowConfig = struct {
         gdi: struct {
             use_backbuffer: bool = true,
         },
+        direct2d: struct {},
     } = .{ .gdi = .{} },
     set_cursor_callback: bool = false,
     default_window_proc: ?fn (hwnd: win32.HWND, msg: u32, wparam: usize, lparam: isize) isize = null,
@@ -142,11 +191,183 @@ pub fn calcTitleLen(title: []const u8) usize {
     );
 }
 
+const thread_count = @typeInfo(zin.ThreadId).@"enum".field_names.len;
 const static_window_count = @typeInfo(zin.StaticWindowId).@"enum".field_names.len;
 const global = struct {
+    var process_init_check: zin.ProcessInitCheck = .{};
     var static_classes: [static_window_count]?WindowClass = @splat(null);
     var static_windows: [static_window_count]?Window = @splat(null);
+    var thread_init_checks: [thread_count]zin.ThreadInitCheck = @splat(.{});
+    /// The Direct2D factory of each thread that has a direct2d window, set
+    /// between that thread's threadInit and threadDeinit.
+    var d2d_factories: [d2d_layout.factory_count]*win32.ID2D1Factory = undefined;
+    var dwrite_factory: std.atomic.Value(?*win32.IDWriteFactory) = .init(null);
+    /// The stored texts of every direct2d window, one window after another.
+    var d2d_stored_texts: [d2d_layout.text_count]D2dStoredText = @splat(.{});
+    /// Each direct2d window's Direct2D objects, null until its first paint.
+    var d2d_objects: [d2d_layout.window_count]?D2dObjects = @splat(null);
+
+    fn updateD2dTarget(
+        comptime window_id: zin.StaticWindowId,
+        hwnd: win32.HWND,
+        size: win32.SIZE,
+    ) *win32.ID2D1HwndRenderTarget {
+        if (global.d2d_objects[comptime d2dWindowIndex(window_id)]) |objects| {
+            const hr = objects.target.Resize(&d2dSize(size));
+            if (!hr.failed) return objects.target;
+            if (hr != win32.D2DERR_RECREATE_TARGET) std.debug.panic(
+                "ID2D1HwndRenderTarget.Resize to {d}x{d} failed, hresult={f}",
+                .{ size.cx, size.cy, hr },
+            );
+            global.releaseD2dObjects(window_id);
+        }
+        var target: *win32.ID2D1HwndRenderTarget = undefined;
+        const hr = d2dFactory(window_id.getConfig().thread).CreateHwndRenderTarget(
+            &.{
+                .type = .DEFAULT,
+                .pixelFormat = .{ .format = .UNKNOWN, .alphaMode = .UNKNOWN },
+                .dpiX = 0,
+                .dpiY = 0,
+                .usage = .{},
+                .minLevel = .DEFAULT,
+            },
+            &.{ .hwnd = hwnd, .pixelSize = d2dSize(size), .presentOptions = .{} },
+            &target,
+        );
+        if (hr.failed) std.debug.panic(
+            "CreateHwndRenderTarget at {d}x{d} failed, hresult={f}",
+            .{ size.cx, size.cy, hr },
+        );
+        {
+            var device_context: *win32.ID2D1DeviceContext = undefined;
+            const query_hr = target.IUnknown.QueryInterface(win32.IID_ID2D1DeviceContext, @ptrCast(&device_context));
+            if (query_hr.failed) win32.panicHresult("QueryInterface for ID2D1DeviceContext", query_hr);
+            defer _ = device_context.IUnknown.Release();
+            device_context.SetUnitMode(.PIXELS);
+        }
+        global.d2d_objects[comptime d2dWindowIndex(window_id)] = .{ .target = target };
+        return target;
+    }
+
+    /// A direct2d window's stored texts, indexed by its `TextId`.
+    fn d2dStoredTexts(comptime window_id: zin.StaticWindowId) []D2dStoredText {
+        const count = @typeInfo(window_id.getConfig().TextId).@"enum".field_names.len;
+        return global.d2d_stored_texts[comptime d2d_layout.text_start[@backingInt(window_id)]..][0..count];
+    }
+
+    fn releaseD2dObjects(comptime window_id: zin.StaticWindowId) void {
+        const objects = global.d2d_objects[comptime d2dWindowIndex(window_id)] orelse return;
+        global.d2d_objects[comptime d2dWindowIndex(window_id)] = null;
+        if (objects.brush) |brush| _ = brush.IUnknown.Release();
+        _ = objects.target.IUnknown.Release();
+    }
 };
+
+/// A window's render target and what was created from it, which a device loss
+/// replaces together.
+const D2dObjects = struct {
+    target: *win32.ID2D1HwndRenderTarget,
+    /// Created by the first `D2dDraw.solidBrush`.
+    brush: ?*win32.ID2D1SolidColorBrush = null,
+};
+
+/// What a direct2d window keeps of one of its `TextId` texts between draws.
+const D2dStoredText = struct {
+    /// Null until the text is first drawn.
+    layout: ?*win32.IDWriteTextLayout = null,
+    /// Of the text's bytes.
+    hash: u64 = 0,
+    len: usize = 0,
+    /// The DPI the text was laid out at.
+    dpi: u32 = 0,
+
+    fn release(stored: *D2dStoredText) void {
+        if (stored.layout) |layout| _ = layout.IUnknown.Release();
+        stored.* = .{};
+    }
+};
+
+fn d2dSize(size: win32.SIZE) win32.D2D_SIZE_U {
+    return .{ .width = @intCast(size.cx), .height = @intCast(size.cy) };
+}
+
+/// Where each direct2d window and thread keeps its Direct2D state in the
+/// arrays of `global`, worked out in one pass over the windows.
+const D2dLayout = struct {
+    window_count: usize,
+    /// A window's index in `global.d2d_objects`, null if it doesn't use direct2d.
+    window_index: [static_window_count]?usize,
+    text_count: usize,
+    /// Where a window's texts start in `global.d2d_stored_texts`.
+    text_start: [static_window_count]usize,
+    factory_count: usize,
+    /// A thread's index in `global.d2d_factories`, null if none of its
+    /// windows use direct2d.
+    factory_index: [thread_count]?usize,
+};
+const d2d_layout: D2dLayout = blk: {
+    @setEvalBranchQuota(1000 + 20 * (static_window_count + thread_count));
+    var layout: D2dLayout = .{
+        .window_count = 0,
+        .window_index = @splat(null),
+        .text_count = 0,
+        .text_start = @splat(0),
+        .factory_count = 0,
+        .factory_index = @splat(null),
+    };
+    var thread_has_d2d: [thread_count]bool = @splat(false);
+    for (std.enums.values(zin.StaticWindowId)) |window_id| {
+        const config = window_id.getConfig();
+        layout.text_start[@backingInt(window_id)] = layout.text_count;
+        switch (config.win32.render) {
+            .gdi => {},
+            .direct2d => {
+                layout.window_index[@backingInt(window_id)] = layout.window_count;
+                layout.window_count += 1;
+                layout.text_count += @typeInfo(config.TextId).@"enum".field_names.len;
+                thread_has_d2d[@backingInt(config.thread)] = true;
+            },
+        }
+    }
+    for (thread_has_d2d, &layout.factory_index) |has_d2d, *index| {
+        if (!has_d2d) continue;
+        index.* = layout.factory_count;
+        layout.factory_count += 1;
+    }
+    break :blk layout;
+};
+
+fn d2dWindowIndex(comptime window_id: zin.StaticWindowId) usize {
+    return d2d_layout.window_index[@backingInt(window_id)] orelse @compileError(
+        "window '" ++ @tagName(window_id) ++ "' doesn't use direct2d",
+    );
+}
+
+/// The factory of the render target of every direct2d window on thread `id`.
+/// Geometries and stroke styles drawn on those targets must come from it. It is
+/// single threaded, so it and everything made from it stay on that thread.
+pub fn d2dFactory(comptime id: zin.ThreadId) *win32.ID2D1Factory {
+    const index = comptime d2d_layout.factory_index[@backingInt(id)] orelse @compileError(
+        "thread '" ++ @tagName(id) ++ "' has no Direct2D factory because none of its windows use direct2d",
+    );
+    enforceThread(id);
+    return global.d2d_factories[index];
+}
+
+/// The process's shared DirectWrite factory, created on first use and usable
+/// from any thread.
+pub fn dwriteFactory() *win32.IDWriteFactory {
+    if (global.dwrite_factory.load(.acquire)) |factory| return factory;
+    var factory: *win32.IDWriteFactory = undefined;
+    const hr = win32.DWriteCreateFactory(.SHARED, win32.IID_IDWriteFactory, @ptrCast(&factory));
+    if (hr.failed) win32.panicHresult("DWriteCreateFactory", hr);
+    if (global.dwrite_factory.cmpxchgStrong(null, factory, .acq_rel, .acquire)) |winner| {
+        // another thread stored its reference first
+        _ = factory.IUnknown.Release();
+        return winner.?;
+    }
+    return factory;
+}
 
 pub fn staticWindow(comptime window_id: zin.StaticWindowId) type {
     return struct {
@@ -583,9 +804,27 @@ pub fn makeWndProc(
                     return 0;
                 },
                 win32.WM_DESTROY => {
+                    switch (window_id.getConfig().win32.render) {
+                        .gdi => {},
+                        .direct2d => {
+                            global.releaseD2dObjects(window_id);
+                            for (global.d2dStoredTexts(window_id)) |*stored| stored.release();
+                        },
+                    }
                     std.debug.assert(windowFromHwnd(hwnd) == global.static_windows[@backingInt(window_id)]);
                     global.static_windows[@backingInt(window_id)] = null;
                     return 0;
+                },
+                win32.WM_DISPLAYCHANGE => {
+                    switch (window_id.getConfig().win32.render) {
+                        .gdi => {},
+                        // a paint is what finds a render target the change lost
+                        .direct2d => win32.invalidateHwnd(hwnd),
+                    }
+                    return if (window_id.getConfig().win32.default_window_proc) |proc|
+                        proc(hwnd, msg, wparam, lparam)
+                    else
+                        win32.DefWindowProcW(hwnd, msg, wparam, lparam);
                 },
                 win32.WM_ERASEBKGND => {
                     // TODO: we might want to call fill rect here in certain circumstances
@@ -770,6 +1009,7 @@ fn paint(
 ) void {
     const paintdc, const ps = win32.beginPaint(hwnd);
     defer win32.endPaint(hwnd, &ps);
+    var text_id_check: zin.TextIdCheck(window_id.getConfig().TextId) = .{};
 
     switch (window_id.getConfig().win32.render) {
         .gdi => |gdi| if (gdi.use_backbuffer) {
@@ -789,6 +1029,7 @@ fn paint(
                 .{ .draw = .{
                     .hwnd = hwnd,
                     .hdc = memdc,
+                    .text_id_check = &text_id_check,
                     .background = if (comptime window_id.getConfig().dynamic_background) window_id.getConfig().background else {},
                 } },
             );
@@ -812,9 +1053,32 @@ fn paint(
                 .{ .draw = .{
                     .hwnd = hwnd,
                     .hdc = paintdc,
+                    .text_id_check = &text_id_check,
                     .background = if (comptime window_id.getConfig().dynamic_background) window_id.getConfig().background else {},
                 } },
             );
+        },
+        .direct2d => {
+            const size = win32.getClientSize(hwnd);
+            const target = global.updateD2dTarget(window_id, hwnd, size);
+            target.ID2D1RenderTarget.BeginDraw();
+            class.callback(.{ .draw = .{
+                .hwnd = hwnd,
+                .dpi = win32.dpiFromHwnd(hwnd),
+                .text_id_check = &text_id_check,
+                .d2d = &target.ID2D1RenderTarget,
+                .client_size = .{ .x = size.cx, .y = size.cy },
+                .background = if (comptime window_id.getConfig().dynamic_background) window_id.getConfig().background else {},
+            } });
+            const hr = target.ID2D1RenderTarget.EndDraw(null, null);
+            if (hr.failed) {
+                @branchHint(.unlikely);
+                if (hr == win32.D2DERR_RECREATE_TARGET) {
+                    global.releaseD2dObjects(window_id);
+                    // the next paint makes a new target
+                    win32.invalidateHwnd(hwnd);
+                } else win32.panicHresult("ID2D1RenderTarget.EndDraw", hr);
+            }
         },
     }
 }
@@ -835,9 +1099,17 @@ pub const PolygonPoint = extern struct {
 };
 
 pub fn Draw(window_id: zin.StaticWindowId) type {
+    return switch (window_id.getConfig().win32.render) {
+        .gdi => GdiDraw(window_id),
+        .direct2d => D2dDraw(window_id),
+    };
+}
+
+fn GdiDraw(window_id: zin.StaticWindowId) type {
     return struct {
         hwnd: win32.HWND,
         hdc: win32.HDC,
+        text_id_check: *zin.TextIdCheck(window_id.getConfig().TextId),
         background: if (window_id.getConfig().dynamic_background) zin.Rgb8 else void,
 
         const Self = @This();
@@ -874,7 +1146,8 @@ pub fn Draw(window_id: zin.StaticWindowId) type {
             }, brush);
         }
 
-        pub fn text(self: *const Self, t: []const u8, x: i32, y: i32, rgb: zin.Rgb8) void {
+        pub fn text(self: *const Self, id: window_id.getConfig().TextId, t: []const u8, x: i32, y: i32, rgb: zin.Rgb8) void {
+            self.text_id_check.onText(id);
             if (win32.COLORREF.invalid == win32.SetTextColor(self.hdc, colorrefFromRgb8(rgb)))
                 win32.panicWin32("SetTextColor", win32.GetLastError());
             if (0 == win32.TextOutA(
@@ -895,6 +1168,151 @@ pub fn Draw(window_id: zin.StaticWindowId) type {
                 "Polygon",
                 win32.GetLastError(),
             );
+        }
+    };
+}
+
+fn d2dPoint(p: PolygonPoint) win32.D2D_POINT_2F {
+    return .{ .x = @floatFromInt(p.point.x), .y = @floatFromInt(p.point.y) };
+}
+
+fn d2dColor(rgb: zin.Rgb8) win32.D2D_COLOR_F {
+    return .{
+        .r = @as(f32, @floatFromInt(rgb.r)) / 255.0,
+        .g = @as(f32, @floatFromInt(rgb.g)) / 255.0,
+        .b = @as(f32, @floatFromInt(rgb.b)) / 255.0,
+        .a = 1,
+    };
+}
+
+fn D2dDraw(window_id: zin.StaticWindowId) type {
+    return struct {
+        hwnd: win32.HWND,
+        dpi: u32,
+        text_id_check: *zin.TextIdCheck(window_id.getConfig().TextId),
+        /// The window's render target between BeginDraw and EndDraw, for the
+        /// app's own Direct2D calls. Its units are pixels.
+        d2d: *win32.ID2D1RenderTarget,
+        /// The size of `d2d`.
+        client_size: zin.XY,
+        background: if (window_id.getConfig().dynamic_background) zin.Rgb8 else void,
+
+        const Self = @This();
+
+        pub fn getDpiScale(self: *const Self) struct { x: f32, y: f32 } {
+            const scale: f32 = @as(f32, @floatFromInt(self.dpi)) / 96.0;
+            return .{ .x = scale, .y = scale };
+        }
+
+        pub fn clear(self: *const Self) void {
+            const rgb = if (comptime window_id.getConfig().dynamic_background)
+                self.background
+            else
+                window_id.getConfig().background;
+            self.d2d.Clear(&d2dColor(rgb));
+        }
+
+        /// The window's one solid color brush, set to `rgb`. The next call
+        /// changes its color.
+        pub fn solidBrush(self: *const Self, rgb: zin.Rgb8) *win32.ID2D1Brush {
+            const objects = &global.d2d_objects[comptime d2dWindowIndex(window_id)].?;
+            const brush = objects.brush orelse blk: {
+                var brush: *win32.ID2D1SolidColorBrush = undefined;
+                const hr = self.d2d.CreateSolidColorBrush(&d2dColor(rgb), null, &brush);
+                if (hr.failed) win32.panicHresult("CreateSolidColorBrush", hr);
+                objects.brush = brush;
+                break :blk brush;
+            };
+            brush.SetColor(&d2dColor(rgb));
+            return &brush.ID2D1Brush;
+        }
+
+        pub fn rect(self: *const Self, r: zin.Rect, rgb: zin.Rgb8) void {
+            self.d2d.FillRectangle(&.{
+                .left = @floatFromInt(r.left),
+                .top = @floatFromInt(r.top),
+                .right = @floatFromInt(r.right),
+                .bottom = @floatFromInt(r.bottom),
+            }, self.solidBrush(rgb));
+        }
+
+        /// 12 point Segoe UI in an unwrapped line, for the caller to release.
+        fn createTextFormat(self: *const Self) *win32.IDWriteTextFormat {
+            var format: *win32.IDWriteTextFormat = undefined;
+            {
+                const hr = dwriteFactory().CreateTextFormat(
+                    win32.L("Segoe UI"),
+                    null,
+                    .NORMAL,
+                    .NORMAL,
+                    .NORMAL,
+                    @as(f32, @floatFromInt(self.dpi)) * 12.0 / 72.0,
+                    win32.L(""),
+                    &format,
+                );
+                if (hr.failed) win32.panicHresult("CreateTextFormat", hr);
+            }
+            {
+                const hr = format.SetWordWrapping(.NO_WRAP);
+                if (hr.failed) win32.panicHresult("SetWordWrapping", hr);
+            }
+            return format;
+        }
+
+        /// The window keeps the layout of text `id`, so drawing the same text
+        /// again at the same DPI doesn't lay it out again.
+        pub fn text(self: *const Self, id: window_id.getConfig().TextId, t: []const u8, x: i32, y: i32, rgb: zin.Rgb8) void {
+            self.text_id_check.onText(id);
+            const stored = &global.d2dStoredTexts(window_id)[@backingInt(id)];
+            const hash = std.hash.Wyhash.hash(0, t);
+            const layout = blk: {
+                if (stored.layout) |layout| {
+                    if (stored.hash == hash and stored.len == t.len and stored.dpi == self.dpi) break :blk layout;
+                    stored.release();
+                }
+                // CreateTextLayout takes UTF-16
+                var buf: [1000]u16 = undefined;
+                if (t.len >= buf.len) std.debug.panic("text is {d} bytes, the max is {d}", .{ t.len, buf.len - 1 });
+                const len = std.unicode.wtf8ToWtf16Le(&buf, t) catch std.debug.panic("text isn't valid WTF-8: '{s}'", .{t});
+                const format = self.createTextFormat();
+                defer _ = format.IUnknown.Release();
+                var layout: *win32.IDWriteTextLayout = undefined;
+                const hr = dwriteFactory().CreateTextLayout(
+                    @ptrCast(&buf),
+                    @intCast(len),
+                    format,
+                    std.math.floatMax(f32),
+                    std.math.floatMax(f32),
+                    &layout,
+                );
+                if (hr.failed) win32.panicHresult("CreateTextLayout", hr);
+                stored.* = .{ .layout = layout, .hash = hash, .len = t.len, .dpi = self.dpi };
+                break :blk layout;
+            };
+            self.d2d.DrawTextLayout(.{ .x = @floatFromInt(x), .y = @floatFromInt(y) }, layout, self.solidBrush(rgb), .{});
+        }
+
+        pub fn polygon(self: *const Self, points: []const PolygonPoint, color: zin.Rgb8) void {
+            if (points.len < 3) std.debug.panic("a polygon needs 3 points, got {d}", .{points.len});
+            var geometry: *win32.ID2D1PathGeometry = undefined;
+            {
+                const hr = d2dFactory(window_id.getConfig().thread).CreatePathGeometry(&geometry);
+                if (hr.failed) win32.panicHresult("CreatePathGeometry", hr);
+            }
+            defer _ = geometry.IUnknown.Release();
+            {
+                var sink: *win32.ID2D1GeometrySink = undefined;
+                const hr = geometry.Open(&sink);
+                if (hr.failed) win32.panicHresult("ID2D1PathGeometry.Open", hr);
+                defer _ = sink.IUnknown.Release();
+                const simple = &sink.ID2D1SimplifiedGeometrySink;
+                simple.BeginFigure(d2dPoint(points[0]), .FILLED);
+                for (points[1..]) |p| sink.AddLine(d2dPoint(p));
+                simple.EndFigure(.CLOSED);
+                const close_hr = simple.Close();
+                if (close_hr.failed) win32.panicHresult("ID2D1GeometrySink.Close", close_hr);
+            }
+            self.d2d.FillGeometry(&geometry.ID2D1Geometry, self.solidBrush(color), null);
         }
     };
 }
