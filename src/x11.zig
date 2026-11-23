@@ -421,16 +421,6 @@ const DpiScale = struct {
     }
 };
 
-pub fn registerDynamicWindowClass(
-    comptime config: zin.WindowConfigData,
-    comptime def: zin.WindowClassDefinition(.{ .dynamic = config }),
-    runtime_config: zin.WindowClassRuntimeConfig,
-) WindowClass {
-    _ = def;
-    _ = runtime_config;
-    @panic("todo: dynamic x11 windows");
-}
-
 pub const WindowConfig = struct {};
 
 pub const WindowClass = struct {
@@ -440,29 +430,26 @@ pub const WindowClass = struct {
     }
 };
 
-pub const DynamicWindow = Window;
 const Window = struct {
     id: x11.Window,
     callback: *const anyopaque,
 
-    // fn asX11Window(self: DynamicWindow) x11.Window {
-    //     return @enumFromInt(@intFromEnum(self));
-    // }
-    pub fn destroy(self: DynamicWindow) void {
+    pub fn destroy(self: Window) void {
         var msg: [x11.destroy_window.len]u8 = undefined;
         x11.destroy_window.serialize(&msg, self.id);
         global.connection.sendOneOrPanic(&msg);
     }
-    pub fn show(self: DynamicWindow) void {
+    pub fn show(self: Window) void {
         if (global.conn.?.write_error == null) {
             global.conn.?.sink.MapWindow(self.id) catch |e| global.conn.?.setWriteError(e);
         }
     }
-    pub fn startTimerMillis(self: DynamicWindow, id: usize, millis: u32) void {
-        _ = self;
-        _ = id;
-        _ = millis;
-        @compileError("todo");
+    /// Raises the window to the top of the stack. It doesn't take the input
+    /// focus, which is left to the window manager.
+    pub fn foreground(self: Window) void {
+        if (global.conn.?.write_error == null) {
+            global.conn.?.sink.ConfigureWindow(self.id, .{ .stack_mode = .above }) catch |e| global.conn.?.setWriteError(e);
+        }
     }
 };
 
@@ -600,12 +587,12 @@ pub fn x11Source() *x11.Source {
     return &global.conn.?.source;
 }
 
-fn staticCallback(comptime window_id: zin.StaticWindowId) *const fn (zin.Callback(.{ .static = window_id })) void {
+fn staticCallback(comptime window_id: zin.StaticWindowId) *const fn (zin.Callback(window_id)) void {
     return @ptrCast(@alignCast(global.static_callbacks[@backingInt(window_id)].?));
 }
 
 pub fn staticWindow(window_id: zin.StaticWindowId) type {
-    const config = zin.WindowConfig{ .static = window_id };
+    const config = window_id.getConfig();
 
     return struct {
         const Self = @This();
@@ -618,7 +605,7 @@ pub fn staticWindow(window_id: zin.StaticWindowId) type {
         }
 
         pub fn registerClass(
-            comptime def: zin.WindowClassDefinition(.{ .static = window_id }),
+            comptime def: zin.WindowClassDefinition(window_id),
             runtime_config: zin.WindowClassRuntimeConfig,
         ) void {
             _ = runtime_config;
@@ -631,9 +618,9 @@ pub fn staticWindow(window_id: zin.StaticWindowId) type {
         }
         pub fn create(opt: zin.CreateWindowOptions) zin.CreateWindowError!void {
             //std.debug.assert(global.static_windows[@intFromEnum(window_id)] == null);
-            const bg = global.conn.?.x11FromRgb(config.data().background);
+            const bg = global.conn.?.x11FromRgb(config.background);
             const size = windowPixelSizeFromInit(opt.size, global.conn.?.dpi_scale);
-            try createWindow(&config.data(), size, opt.pos, bg, global.conn.?.staticWindowId(window_id), &opt.platform);
+            try createWindow(&config, size, opt.pos, bg, global.conn.?.staticWindowId(window_id), &opt.platform);
             global.static_window_common_states[@backingInt(window_id)] = .{ .created = .{
                 .damaged = false,
             } };
@@ -679,8 +666,7 @@ pub fn staticWindow(window_id: zin.StaticWindowId) type {
             return window().show();
         }
         pub fn foreground() void {
-            @panic("todo");
-            // global.static_windows[@intFromEnum(window_id)].?.foreground();
+            window().foreground();
         }
         pub fn invalidate() void {
             switch (global.static_window_common_states[@backingInt(window_id)]) {
@@ -721,15 +707,6 @@ fn windowPixelSizeFromInit(init: zin.WindowSizeInit, dpi_scale: DpiScale) zin.XY
             .y = dpi_scale.scale(i32, s.y),
         },
     };
-}
-
-pub fn createDynamicWindow(class: WindowClass, opt: zin.CreateWindowOptions) zin.CreateWindowError!DynamicWindow {
-    const window_id = (global.conn.?.reserveId() orelse return error.OutOfIds).window();
-    errdefer global.conn.?.releaseId(@fromBackingInt(@intCast(@backingInt(window_id))));
-    //const bg = x11FromRgb((zin.WindowConfig{ .static = window_id }).data().background);
-    if (true) @panic("todo: get the background from the window config");
-    try createWindow(&opt, window_id);
-    return .{ .id = window_id, .callback = class.callback };
 }
 
 pub const CreateWindowOptions = struct {
@@ -922,11 +899,11 @@ fn drawStaticWindow(comptime window_id: zin.StaticWindowId) error{WriteFailed}!e
 
     const state = global.staticWindowCustomState(window_id);
 
-    const config = zin.WindowConfig{ .static = window_id };
+    const config = window_id.getConfig();
     const window = global.conn.?.staticWindowId(window_id);
 
     if (state.presenter == null) {
-        const client_size = if (config.data().window_size_events) state.client_size else zin.XY{ .x = 1, .y = 1 };
+        const client_size = if (config.window_size_events) state.client_size else zin.XY{ .x = 1, .y = 1 };
         state.presenter = .{
             .opcode_base = global.conn.?.present_opcode_base,
             .depth = global.conn.?.depth,
@@ -942,8 +919,8 @@ fn drawStaticWindow(comptime window_id: zin.StaticWindowId) error{WriteFailed}!e
     staticCallback(window_id)(.{ .draw = .{
         .window = window,
         .pixmap = back_pixmap,
-        .client_size = if (config.data().window_size_events) state.client_size else {},
-        .background = if (comptime config.data().dynamic_background) config.data().background else {},
+        .client_size = if (config.window_size_events) state.client_size else {},
+        .background = if (comptime config.dynamic_background) config.background else {},
     } });
     if (global.conn.?.write_error) |e| return e;
 
@@ -1211,8 +1188,8 @@ pub fn x11HandleMessage(source: *x11.Source, msg_kind: x11.ServerMsgKind) !void 
             const event = try source.read2(.KeyPress);
             if (global.conn.?.staticWindowFromX11Id(event.event)) |w| switch (w) {
                 inline else => |window_id| {
-                    const config = zin.WindowConfig{ .static = window_id };
-                    if (config.data().key_events) {
+                    const config = window_id.getConfig();
+                    if (config.key_events) {
                         if (global.conn.?.keymap.getKeysym(event.keycode, event.state.mod())) |keysym| {
                             staticCallback(window_id)(.{ .key = keyFromX11(.down, event.keycode, event.state, keysym) });
                         } else |err| switch (err) {
@@ -1222,14 +1199,14 @@ pub fn x11HandleMessage(source: *x11.Source, msg_kind: x11.ServerMsgKind) !void 
                         }
                     }
                 },
-            } else @panic("todo: motion_notify on dynamic windows");
+            } else @panic("X11 event for a window zin did not create");
         },
         .KeyRelease => {
             const event = try source.read2(.KeyRelease);
             if (global.conn.?.staticWindowFromX11Id(event.event)) |w| switch (w) {
                 inline else => |window_id| {
-                    const config = zin.WindowConfig{ .static = window_id };
-                    if (config.data().key_events) {
+                    const config = window_id.getConfig();
+                    if (config.key_events) {
                         if (global.conn.?.keymap.getKeysym(event.keycode, event.state.mod())) |keysym| {
                             staticCallback(window_id)(.{ .key = keyFromX11(.up, event.keycode, event.state, keysym) });
                         } else |err| switch (err) {
@@ -1239,7 +1216,7 @@ pub fn x11HandleMessage(source: *x11.Source, msg_kind: x11.ServerMsgKind) !void 
                         }
                     }
                 },
-            } else @panic("todo: motion_notify on dynamic windows");
+            } else @panic("X11 event for a window zin did not create");
         },
         .ButtonPress => {
             const event = try source.read2(.ButtonPress);
@@ -1253,8 +1230,8 @@ pub fn x11HandleMessage(source: *x11.Source, msg_kind: x11.ServerMsgKind) !void 
             };
             if (global.conn.?.staticWindowFromX11Id(event.event)) |w| switch (w) {
                 inline else => |window_id| {
-                    const config = zin.WindowConfig{ .static = window_id };
-                    if (config.data().mouse_events) {
+                    const config = window_id.getConfig();
+                    if (config.mouse_events) {
                         staticCallback(window_id)(.{ .mouse = .{
                             .position = pos,
                             .button = .{ .id = button_id, .state = .down },
@@ -1266,7 +1243,7 @@ pub fn x11HandleMessage(source: *x11.Source, msg_kind: x11.ServerMsgKind) !void 
                         } });
                     }
                 },
-            } else @panic("todo: button_press on dynamic windows");
+            } else @panic("X11 event for a window zin did not create");
         },
         .ButtonRelease => {
             const event = try source.read2(.ButtonRelease);
@@ -1280,8 +1257,8 @@ pub fn x11HandleMessage(source: *x11.Source, msg_kind: x11.ServerMsgKind) !void 
             };
             if (global.conn.?.staticWindowFromX11Id(event.event)) |w| switch (w) {
                 inline else => |window_id| {
-                    const config = zin.WindowConfig{ .static = window_id };
-                    if (config.data().mouse_events) {
+                    const config = window_id.getConfig();
+                    if (config.mouse_events) {
                         staticCallback(window_id)(.{ .mouse = .{
                             .position = pos,
                             .button = .{ .id = button_id, .state = .up },
@@ -1293,7 +1270,7 @@ pub fn x11HandleMessage(source: *x11.Source, msg_kind: x11.ServerMsgKind) !void 
                         } });
                     }
                 },
-            } else @panic("todo: button_release on dynamic windows");
+            } else @panic("X11 event for a window zin did not create");
         },
         // .enter_notify => |msg| {
         //     log.info("enter_window: {}", .{msg});
@@ -1309,8 +1286,8 @@ pub fn x11HandleMessage(source: *x11.Source, msg_kind: x11.ServerMsgKind) !void 
             };
             if (global.conn.?.staticWindowFromX11Id(event.event)) |w| switch (w) {
                 inline else => |window_id| {
-                    const config = zin.WindowConfig{ .static = window_id };
-                    if (config.data().mouse_events) {
+                    const config = window_id.getConfig();
+                    if (config.mouse_events) {
                         staticCallback(window_id)(.{ .mouse = .{
                             .position = pos,
                             .button = null,
@@ -1322,7 +1299,7 @@ pub fn x11HandleMessage(source: *x11.Source, msg_kind: x11.ServerMsgKind) !void 
                         } });
                     }
                 },
-            } else @panic("todo: motion_notify on dynamic windows");
+            } else @panic("X11 event for a window zin did not create");
         },
         .Expose => {
             const expose = try source.read2(.Expose);
@@ -1331,7 +1308,7 @@ pub fn x11HandleMessage(source: *x11.Source, msg_kind: x11.ServerMsgKind) !void 
                     .not_created => {},
                     .created => |*created| created.damaged = true,
                 },
-            } else @panic("todo: expose on dynamic windows");
+            } else @panic("X11 event for a window zin did not create");
         },
 
         // messages we ignoring but still logging
@@ -1351,7 +1328,7 @@ pub fn x11HandleMessage(source: *x11.Source, msg_kind: x11.ServerMsgKind) !void 
                     .not_created => {}, // ok, means the user must have closed the window
                     .created => @panic("todo: notify app that a window was destroyed"),
                 }
-            } else @panic("todo: expose on dynamic windows");
+            } else @panic("X11 event for a window zin did not create");
         },
         .ConfigureNotify => {
             const msg = try source.read2(.ConfigureNotify);
@@ -1371,7 +1348,7 @@ pub fn x11HandleMessage(source: *x11.Source, msg_kind: x11.ServerMsgKind) !void 
                         staticCallback(window_id)(.{ .window_size = .{ .x = msg.width, .y = msg.height } });
                     }
                 },
-            } else @panic("todo: configure_notify on dynamic windows");
+            } else @panic("X11 event for a window zin did not create");
         },
         .GenericEvent => {
             const event = try source.read2(.GenericEvent);
@@ -1450,12 +1427,12 @@ pub const PolygonPoint = struct {
     }
 };
 
-pub fn Draw(window_config: zin.WindowConfig) type {
+pub fn Draw(window_id: zin.StaticWindowId) type {
     return struct {
         window: x11.Window,
         pixmap: x11.Pixmap,
-        client_size: if (window_config.data().window_size_events) zin.XY else void,
-        background: if (window_config.data().dynamic_background) zin.Rgb8 else void,
+        client_size: if (window_id.getConfig().window_size_events) zin.XY else void,
+        background: if (window_id.getConfig().dynamic_background) zin.Rgb8 else void,
 
         const Self = @This();
 
@@ -1471,10 +1448,10 @@ pub fn Draw(window_config: zin.WindowConfig) type {
 
         pub fn clear(self: *const Self) void {
             if (global.conn.?.write_error != null) return;
-            const rgb = if (comptime window_config.data().dynamic_background)
+            const rgb = if (comptime window_id.getConfig().dynamic_background)
                 self.background
             else
-                window_config.data().background;
+                window_id.getConfig().background;
             const drawable = self.x11Drawable();
             global.conn.?.sink.ChangeGc(gcFromWindow(self.window), .{
                 .foreground = global.conn.?.x11FromRgb(rgb),

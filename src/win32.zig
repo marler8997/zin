@@ -66,17 +66,9 @@ pub const WindowClass = struct {
         )) win32.panicWin32("UnregisterClass", win32.GetLastError());
     }
 };
-pub fn registerDynamicWindowClass(
-    comptime config: zin.WindowConfigData,
-    comptime def: zin.WindowClassDefinition(.{ .dynamic = config }),
-    runtime_config: zin.WindowClassRuntimeConfig,
-) WindowClass {
-    return registerWindowClass(.{ .dynamic = config }, def, runtime_config);
-}
-
 fn registerWindowClass(
-    comptime window_config: zin.WindowConfig,
-    comptime def: zin.WindowClassDefinition(window_config),
+    comptime window_id: zin.StaticWindowId,
+    comptime def: zin.WindowClassDefinition(window_id),
     runtime_config: zin.WindowClassRuntimeConfig,
 ) WindowClass {
     var c: win32.WNDCLASSEXW = .{
@@ -85,7 +77,7 @@ fn registerWindowClass(
         //       enabling them will change how window events are sent
         // .DBLCLKS = 1
         .style = .{ .VREDRAW = 1, .HREDRAW = 1 },
-        .lpfnWndProc = if (runtime_config.win32_wndproc) |proc| proc else makeWndProc(window_config, def),
+        .lpfnWndProc = if (runtime_config.win32_wndproc) |proc| proc else makeWndProc(window_id, def),
         .cbClsExtra = 0,
         .cbWndExtra = 0,
         .hInstance = win32.GetModuleHandleW(null),
@@ -104,7 +96,6 @@ fn registerWindowClass(
     return .{ .atom = atom };
 }
 
-pub const DynamicWindow = Window;
 const Window = enum(usize) {
     _,
     fn asHwnd(self: Window) win32.HWND {
@@ -166,11 +157,11 @@ pub fn staticWindow(comptime window_id: zin.StaticWindowId) type {
         }
 
         pub fn registerClass(
-            comptime def: zin.WindowClassDefinition(.{ .static = window_id }),
+            comptime def: zin.WindowClassDefinition(window_id),
             config: zin.WindowClassRuntimeConfig,
         ) void {
             std.debug.assert(global.static_classes[@backingInt(window_id)] == null);
-            global.static_classes[@backingInt(window_id)] = registerWindowClass(.{ .static = window_id }, def, config);
+            global.static_classes[@backingInt(window_id)] = registerWindowClass(window_id, def, config);
         }
         pub fn unregisterClass() void {
             global.static_classes[@backingInt(window_id)].?.unregister();
@@ -236,10 +227,6 @@ fn windowSizeFromClient(
 }
 
 pub const CreateWindowOptions = struct {};
-
-pub fn createDynamicWindow(class: WindowClass, opt: zin.CreateWindowOptions) zin.CreateWindowError!DynamicWindow {
-    return windowFromHwnd(try createWindow(class, &opt));
-}
 
 fn createWindow(class: WindowClass, opt: *const zin.CreateWindowOptions) zin.CreateWindowError!win32.HWND {
     var title_buf: [max_window_title + 1]u16 = undefined;
@@ -565,8 +552,8 @@ fn mouseDownFromWparam(wparam: win32.WPARAM) zin.MouseButtonsDown {
 
 const WndProc = fn (win32.HWND, u32, win32.WPARAM, win32.LPARAM) callconv(.winapi) win32.LRESULT;
 pub fn makeWndProc(
-    config: zin.WindowConfig,
-    class: zin.WindowClassDefinition(config),
+    window_id: zin.StaticWindowId,
+    class: zin.WindowClassDefinition(window_id),
 ) WndProc {
     return (struct {
         pub fn wndProc(
@@ -591,23 +578,13 @@ pub fn makeWndProc(
 
             switch (msg) {
                 win32.WM_CREATE => {
-                    switch (config) {
-                        .static => |window_id| {
-                            std.debug.assert(null == global.static_windows[@backingInt(window_id)]);
-                            global.static_windows[@backingInt(window_id)] = windowFromHwnd(hwnd);
-                        },
-                        .dynamic => {},
-                    }
+                    std.debug.assert(null == global.static_windows[@backingInt(window_id)]);
+                    global.static_windows[@backingInt(window_id)] = windowFromHwnd(hwnd);
                     return 0;
                 },
                 win32.WM_DESTROY => {
-                    switch (config) {
-                        .static => |window_id| {
-                            std.debug.assert(windowFromHwnd(hwnd) == global.static_windows[@backingInt(window_id)]);
-                            global.static_windows[@backingInt(window_id)] = null;
-                        },
-                        .dynamic => {},
-                    }
+                    std.debug.assert(windowFromHwnd(hwnd) == global.static_windows[@backingInt(window_id)]);
+                    global.static_windows[@backingInt(window_id)] = null;
                     return 0;
                 },
                 win32.WM_ERASEBKGND => {
@@ -615,14 +592,11 @@ pub fn makeWndProc(
                     return 0;
                 },
                 win32.WM_CLOSE => {
-                    switch (config) {
-                        .static => class.callback(.close),
-                        .dynamic => class.callback(windowFromHwnd(hwnd), .close),
-                    }
+                    class.callback(.close);
                     return 0;
                 },
                 win32.WM_SETCURSOR => {
-                    if (config.data().win32.set_cursor_callback) {
+                    if (window_id.getConfig().win32.set_cursor_callback) {
                         var result: isize = 0;
                         class.callback(.{
                             .win32_set_cursor = .{ .result_ref = &result, .wparam = wparam, .lparam = lparam },
@@ -632,11 +606,11 @@ pub fn makeWndProc(
                     return win32.DefWindowProcW(hwnd, msg, wparam, lparam);
                 },
                 win32.WM_PAINT => {
-                    paint(config, class, hwnd);
+                    paint(window_id, class, hwnd);
                     return 0;
                 },
                 win32.WM_SIZE => {
-                    if (config.data().window_size_events) {
+                    if (window_id.getConfig().window_size_events) {
                         const width = win32.loword(lparam);
                         const height = win32.hiword(lparam);
                         const client_size = win32.getClientSize(hwnd);
@@ -647,23 +621,15 @@ pub fn makeWndProc(
                     return 0;
                 },
                 win32.WM_TIMER => {
-                    switch (config.data().timers) {
+                    switch (window_id.getConfig().timers) {
                         .none => {},
                         .one => {
                             std.debug.assert(wparam == 1);
-                            switch (config) {
-                                .static => class.callback(.{ .timer = {} }),
-                                .dynamic => class.callback(windowFromHwnd(hwnd), .{ .timer = {} }),
-                            }
+                            class.callback(.{ .timer = {} });
                         },
-                        .type => |TimerId| switch (config) {
-                            .static => class.callback(.{
-                                .timer = zin.timerIdFromInt(TimerId, wparam),
-                            }),
-                            .dynamic => class.callback(windowFromHwnd(hwnd), .{
-                                .timer = zin.timerIdFromInt(TimerId, wparam),
-                            }),
-                        },
+                        .type => |TimerId| class.callback(.{
+                            .timer = zin.timerIdFromInt(TimerId, wparam),
+                        }),
                     }
                     return 0;
                 },
@@ -678,11 +644,8 @@ pub fn makeWndProc(
                         rect.bottom - rect.top,
                         .{ .NOACTIVATE = 1, .NOZORDER = 1 },
                     )) win32.panicWin32("SetWindowPos", win32.GetLastError());
-                    if (comptime config.data().dpi_events) {
-                        switch (config) {
-                            .static => class.callback(.{ .dpi_change = {} }),
-                            .dynamic => class.callback(windowFromHwnd(hwnd), .{ .dpi_change = {} }),
-                        }
+                    if (comptime window_id.getConfig().dpi_events) {
+                        class.callback(.{ .dpi_change = {} });
                     }
                     return 0;
                 },
@@ -691,189 +654,107 @@ pub fn makeWndProc(
                     return 0 | (@as(win32.LRESULT, 1) << 16); // MNC_CLOSE = 1
                 },
                 win32.WM_KEYDOWN, win32.WM_SYSKEYDOWN => {
-                    if (comptime config.data().key_events) switch (config) {
-                        .static => class.callback(.{ .key = keyFromWin32(.down, wparam, lparam) }),
-                        .dynamic => class.callback(
-                            windowFromHwnd(hwnd),
-                            .{ .key = keyFromWin32(.down, wparam, lparam) },
-                        ),
-                    };
+                    if (comptime window_id.getConfig().key_events) class.callback(.{ .key = keyFromWin32(.down, wparam, lparam) });
                     if (msg == win32.WM_KEYDOWN) return 0;
                     return win32.DefWindowProcW(hwnd, msg, wparam, lparam);
                 },
                 win32.WM_KEYUP, win32.WM_SYSKEYUP => {
-                    if (comptime config.data().key_events) switch (config) {
-                        .static => class.callback(.{ .key = keyFromWin32(.up, wparam, lparam) }),
-                        .dynamic => class.callback(
-                            windowFromHwnd(hwnd),
-                            .{ .key = keyFromWin32(.up, wparam, lparam) },
-                        ),
-                    };
+                    if (comptime window_id.getConfig().key_events) class.callback(.{ .key = keyFromWin32(.up, wparam, lparam) });
                     if (msg == win32.WM_KEYUP) return 0;
                     return win32.DefWindowProcW(hwnd, msg, wparam, lparam);
                 },
                 win32.WM_MOUSEMOVE => {
-                    if (comptime config.data().mouse_events) {
+                    if (comptime window_id.getConfig().mouse_events) {
                         const pos = win32.pointFromLparam(lparam);
-                        switch (config) {
-                            .static => class.callback(
-                                .{ .mouse = .{
-                                    .position = .{ .x = pos.x, .y = pos.y },
-                                    .button = null,
-                                    .down = mouseDownFromWparam(wparam),
-                                } },
-                            ),
-                            .dynamic => class.callback(
-                                windowFromHwnd(hwnd),
-                                .{ .mouse = .{
-                                    .position = .{ .x = pos.x, .y = pos.y },
-                                    .button = null,
-                                    .down = mouseDownFromWparam(wparam),
-                                } },
-                            ),
-                        }
+                        class.callback(
+                            .{ .mouse = .{
+                                .position = .{ .x = pos.x, .y = pos.y },
+                                .button = null,
+                                .down = mouseDownFromWparam(wparam),
+                            } },
+                        );
                     }
                     return 0;
                 },
                 win32.WM_LBUTTONDOWN => {
-                    if (comptime config.data().mouse_events) {
+                    if (comptime window_id.getConfig().mouse_events) {
                         const pos = win32.pointFromLparam(lparam);
-                        switch (config) {
-                            .static => class.callback(
-                                .{ .mouse = .{
-                                    .position = .{ .x = pos.x, .y = pos.y },
-                                    .button = .{ .id = .left, .state = .down },
-                                    .down = mouseDownFromWparam(wparam),
-                                } },
-                            ),
-                            .dynamic => class.callback(
-                                windowFromHwnd(hwnd),
-                                .{ .mouse = .{
-                                    .position = .{ .x = pos.x, .y = pos.y },
-                                    .button = .{ .id = .left, .state = .down },
-                                    .down = mouseDownFromWparam(wparam),
-                                } },
-                            ),
-                        }
+                        class.callback(
+                            .{ .mouse = .{
+                                .position = .{ .x = pos.x, .y = pos.y },
+                                .button = .{ .id = .left, .state = .down },
+                                .down = mouseDownFromWparam(wparam),
+                            } },
+                        );
                     }
                     return 0;
                 },
                 win32.WM_LBUTTONUP => {
-                    if (comptime config.data().mouse_events) {
+                    if (comptime window_id.getConfig().mouse_events) {
                         const pos = win32.pointFromLparam(lparam);
-                        switch (config) {
-                            .static => class.callback(
-                                .{ .mouse = .{
-                                    .position = .{ .x = pos.x, .y = pos.y },
-                                    .button = .{ .id = .left, .state = .up },
-                                    .down = mouseDownFromWparam(wparam),
-                                } },
-                            ),
-                            .dynamic => class.callback(
-                                windowFromHwnd(hwnd),
-                                .{ .mouse = .{
-                                    .position = .{ .x = pos.x, .y = pos.y },
-                                    .button = .{ .id = .left, .state = .up },
-                                    .down = mouseDownFromWparam(wparam),
-                                } },
-                            ),
-                        }
+                        class.callback(
+                            .{ .mouse = .{
+                                .position = .{ .x = pos.x, .y = pos.y },
+                                .button = .{ .id = .left, .state = .up },
+                                .down = mouseDownFromWparam(wparam),
+                            } },
+                        );
                     }
                     return 0;
                 },
                 win32.WM_RBUTTONDOWN => {
-                    if (comptime config.data().mouse_events) {
+                    if (comptime window_id.getConfig().mouse_events) {
                         const pos = win32.pointFromLparam(lparam);
-                        switch (config) {
-                            .static => class.callback(
-                                .{ .mouse = .{
-                                    .position = .{ .x = pos.x, .y = pos.y },
-                                    .button = .{ .id = .right, .state = .down },
-                                    .down = mouseDownFromWparam(wparam),
-                                } },
-                            ),
-                            .dynamic => class.callback(
-                                windowFromHwnd(hwnd),
-                                .{ .mouse = .{
-                                    .position = .{ .x = pos.x, .y = pos.y },
-                                    .button = .{ .id = .right, .state = .down },
-                                    .down = mouseDownFromWparam(wparam),
-                                } },
-                            ),
-                        }
+                        class.callback(
+                            .{ .mouse = .{
+                                .position = .{ .x = pos.x, .y = pos.y },
+                                .button = .{ .id = .right, .state = .down },
+                                .down = mouseDownFromWparam(wparam),
+                            } },
+                        );
                     }
                     return 0;
                 },
                 win32.WM_RBUTTONUP => {
-                    if (comptime config.data().mouse_events) {
+                    if (comptime window_id.getConfig().mouse_events) {
                         const pos = win32.pointFromLparam(lparam);
-                        switch (config) {
-                            .static => class.callback(
-                                .{ .mouse = .{
-                                    .position = .{ .x = pos.x, .y = pos.y },
-                                    .button = .{ .id = .right, .state = .up },
-                                    .down = mouseDownFromWparam(wparam),
-                                } },
-                            ),
-                            .dynamic => class.callback(
-                                windowFromHwnd(hwnd),
-                                .{ .mouse = .{
-                                    .position = .{ .x = pos.x, .y = pos.y },
-                                    .button = .{ .id = .right, .state = .up },
-                                    .down = mouseDownFromWparam(wparam),
-                                } },
-                            ),
-                        }
+                        class.callback(
+                            .{ .mouse = .{
+                                .position = .{ .x = pos.x, .y = pos.y },
+                                .button = .{ .id = .right, .state = .up },
+                                .down = mouseDownFromWparam(wparam),
+                            } },
+                        );
                     }
                     return 0;
                 },
                 win32.WM_MBUTTONDOWN => {
-                    if (comptime config.data().mouse_events) {
+                    if (comptime window_id.getConfig().mouse_events) {
                         const pos = win32.pointFromLparam(lparam);
-                        switch (config) {
-                            .static => class.callback(
-                                .{ .mouse = .{
-                                    .position = .{ .x = pos.x, .y = pos.y },
-                                    .button = .{ .id = .middle, .state = .down },
-                                    .down = mouseDownFromWparam(wparam),
-                                } },
-                            ),
-                            .dynamic => class.callback(
-                                windowFromHwnd(hwnd),
-                                .{ .mouse = .{
-                                    .position = .{ .x = pos.x, .y = pos.y },
-                                    .button = .{ .id = .middle, .state = .down },
-                                    .down = mouseDownFromWparam(wparam),
-                                } },
-                            ),
-                        }
+                        class.callback(
+                            .{ .mouse = .{
+                                .position = .{ .x = pos.x, .y = pos.y },
+                                .button = .{ .id = .middle, .state = .down },
+                                .down = mouseDownFromWparam(wparam),
+                            } },
+                        );
                     }
                     return 0;
                 },
                 win32.WM_MBUTTONUP => {
-                    if (comptime config.data().mouse_events) {
+                    if (comptime window_id.getConfig().mouse_events) {
                         const pos = win32.pointFromLparam(lparam);
-                        switch (config) {
-                            .static => class.callback(
-                                .{ .mouse = .{
-                                    .position = .{ .x = pos.x, .y = pos.y },
-                                    .button = .{ .id = .middle, .state = .up },
-                                    .down = mouseDownFromWparam(wparam),
-                                } },
-                            ),
-                            .dynamic => class.callback(
-                                windowFromHwnd(hwnd),
-                                .{ .mouse = .{
-                                    .position = .{ .x = pos.x, .y = pos.y },
-                                    .button = .{ .id = .middle, .state = .up },
-                                    .down = mouseDownFromWparam(wparam),
-                                } },
-                            ),
-                        }
+                        class.callback(
+                            .{ .mouse = .{
+                                .position = .{ .x = pos.x, .y = pos.y },
+                                .button = .{ .id = .middle, .state = .up },
+                                .down = mouseDownFromWparam(wparam),
+                            } },
+                        );
                     }
                     return 0;
                 },
-                else => return if (config.data().win32.default_window_proc) |proc|
+                else => return if (window_id.getConfig().win32.default_window_proc) |proc|
                     proc(hwnd, msg, wparam, lparam)
                 else
                     win32.DefWindowProcW(hwnd, msg, wparam, lparam),
@@ -883,14 +764,14 @@ pub fn makeWndProc(
 }
 
 fn paint(
-    comptime config: zin.WindowConfig,
-    class: zin.WindowClassDefinition(config),
+    comptime window_id: zin.StaticWindowId,
+    class: zin.WindowClassDefinition(window_id),
     hwnd: win32.HWND,
 ) void {
     const paintdc, const ps = win32.beginPaint(hwnd);
     defer win32.endPaint(hwnd, &ps);
 
-    switch (config.data().win32.render) {
+    switch (window_id.getConfig().win32.render) {
         .gdi => |gdi| if (gdi.use_backbuffer) {
             const size = win32.getClientSize(hwnd);
             // todo: worth it to cache between frames?
@@ -904,25 +785,13 @@ fn paint(
 
             if (0 == win32.SetBkMode(memdc, .TRANSPARENT)) win32.panicWin32("SetBkMode", win32.GetLastError());
 
-            switch (config) {
-                .static => class.callback(
-                    .{ .draw = .{
-                        .hwnd = hwnd,
-                        .hdc = memdc,
-                        .background = if (comptime config.data().dynamic_background) config.data().background else {},
-                    } },
-                ),
-                .dynamic => class.callback(
-                    windowFromHwnd(hwnd),
-                    .{
-                        .draw = .{
-                            .hwnd = hwnd,
-                            .hdc = memdc,
-                            .background = if (comptime config.data().dynamic_background) config.data().background else {},
-                        },
-                    },
-                ),
-            }
+            class.callback(
+                .{ .draw = .{
+                    .hwnd = hwnd,
+                    .hdc = memdc,
+                    .background = if (comptime window_id.getConfig().dynamic_background) window_id.getConfig().background else {},
+                } },
+            );
             if (0 == win32.BitBlt(
                 paintdc,
                 0,
@@ -939,23 +808,13 @@ fn paint(
             );
         } else {
             if (0 == win32.SetBkMode(paintdc, .TRANSPARENT)) win32.panicWin32("SetBkMode", win32.GetLastError());
-            switch (config) {
-                .static => class.callback(
-                    .{ .draw = .{
-                        .hwnd = hwnd,
-                        .hdc = paintdc,
-                        .background = if (comptime config.data().dynamic_background) config.data().background else {},
-                    } },
-                ),
-                .dynamic => class.callback(
-                    windowFromHwnd(hwnd),
-                    .{ .draw = .{
-                        .hwnd = hwnd,
-                        .hdc = paintdc,
-                        .background = if (comptime config.data().dynamic_background) config.data().background else {},
-                    } },
-                ),
-            }
+            class.callback(
+                .{ .draw = .{
+                    .hwnd = hwnd,
+                    .hdc = paintdc,
+                    .background = if (comptime window_id.getConfig().dynamic_background) window_id.getConfig().background else {},
+                } },
+            );
         },
     }
 }
@@ -975,11 +834,11 @@ pub const PolygonPoint = extern struct {
     }
 };
 
-pub fn Draw(window_config: zin.WindowConfig) type {
+pub fn Draw(window_id: zin.StaticWindowId) type {
     return struct {
         hwnd: win32.HWND,
         hdc: win32.HDC,
-        background: if (window_config.data().dynamic_background) zin.Rgb8 else void,
+        background: if (window_id.getConfig().dynamic_background) zin.Rgb8 else void,
 
         const Self = @This();
 
@@ -989,10 +848,10 @@ pub fn Draw(window_config: zin.WindowConfig) type {
         }
 
         pub fn clear(self: *const Self) void {
-            const rgb = if (comptime window_config.data().dynamic_background)
+            const rgb = if (comptime window_id.getConfig().dynamic_background)
                 self.background
             else
-                window_config.data().background;
+                window_id.getConfig().background;
             const brush = win32.createSolidBrush(colorrefFromRgb8(rgb));
             defer win32.deleteObject(brush);
             const size = win32.getClientSize(self.hwnd);

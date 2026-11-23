@@ -92,18 +92,18 @@ const global = struct {
 };
 
 pub fn staticWindow(window_id: zin.StaticWindowId) type {
-    const config = zin.WindowConfig{ .static = window_id };
+    const config = window_id.getConfig();
     _ = config;
     return struct {
         const Self = @This();
 
         pub fn registerClass(
-            comptime def: zin.WindowClassDefinition(.{ .static = window_id }),
+            comptime def: zin.WindowClassDefinition(window_id),
             runtime_config: zin.WindowClassRuntimeConfig,
         ) void {
             _ = runtime_config;
             std.debug.assert(global.static_classes[@backingInt(window_id)] == null);
-            const view = ZinView(.{ .static = window_id }, def).create();
+            const view = ZinView(window_id, def).create();
             global.static_classes[@backingInt(window_id)] = view.any();
         }
         pub fn unregisterClass() void {}
@@ -130,7 +130,7 @@ pub fn staticWindow(window_id: zin.StaticWindowId) type {
             //@panic("todo");
         }
         pub fn foreground() void {
-            @panic("todo: implement foreground");
+            global.static_windows[@backingInt(window_id)].?.makeKeyAndOrderFront();
         }
         pub fn invalidate() void {
             const view = global.static_windows[@backingInt(window_id)].?.contentView();
@@ -162,30 +162,7 @@ pub fn staticWindow(window_id: zin.StaticWindowId) type {
 }
 
 pub const WindowClass = struct {};
-pub fn registerDynamicWindowClass(
-    comptime config: zin.WindowConfigData,
-    comptime def: zin.WindowClassDefinition(.{ .dynamic = config }),
-    runtime_config: zin.WindowClassRuntimeConfig,
-) WindowClass {
-    _ = def;
-    _ = runtime_config;
-    @panic("todo");
-}
-
-pub const DynamicWindow = struct {
-    pub fn show(self: *const DynamicWindow) void {
-        _ = self;
-        @panic("todo");
-    }
-};
-
 pub const CreateWindowOptions = struct {};
-
-pub fn createDynamicWindow(class: WindowClass, opt: zin.CreateWindowOptions) zin.CreateWindowError!DynamicWindow {
-    _ = class;
-    _ = opt;
-    @panic("todo");
-}
 
 fn createWindow(
     opt: *const zin.CreateWindowOptions,
@@ -441,8 +418,8 @@ pub const VirtualKey = enum(u16) {
 };
 pub const ScanCode = void;
 
-pub fn Draw(window_config: zin.WindowConfig) type {
-    _ = window_config;
+pub fn Draw(window_id: zin.StaticWindowId) type {
+    _ = window_id;
     return struct {
         const Self = @This();
         ctx: *c.CGContext,
@@ -455,10 +432,10 @@ pub fn Draw(window_config: zin.WindowConfig) type {
         }
 
         pub fn clear(self: *const Self) void {
-            // const rgb = if (comptime window_config.data().dynamic_background)
+            // const rgb = if (comptime window_id.getConfig().dynamic_background)
             //     self.background
             // else
-            //     window_config.data().background;
+            //     window_id.getConfig().background;
             // TOOD: not sure if this is right or if we should just be calling FillRect?
             c.CGContextClearRect(self.ctx, .{
                 .origin = .{ .x = 0, .y = 0 },
@@ -551,8 +528,8 @@ const AnyZinView = struct {
     }
 };
 fn ZinView(
-    config: zin.WindowConfig,
-    classdef: zin.WindowClassDefinition(config),
+    window_id: zin.StaticWindowId,
+    classdef: zin.WindowClassDefinition(window_id),
 ) type {
     return struct {
         obj: objc.Object,
@@ -582,7 +559,7 @@ fn ZinView(
             if (!class.addMethod("resignFirstResponder", resignFirstResponder))
                 @panic("addMethod resignFirstResponder failed");
 
-            if (config.data().mouse_events) {
+            if (window_id.getConfig().mouse_events) {
                 if (!class.addMethod("mouseMoved:", mouseMoved)) @panic("addMethod mouseMoved failed");
                 if (!class.addMethod("mouseDragged:", mouseDragged)) @panic("addMethod mouseDragged failed");
                 if (!class.addMethod("rightMouseDragged:", rightMouseDragged)) @panic("addMethod rightMouseDragged failed");
@@ -598,20 +575,20 @@ fn ZinView(
                 if (!class.addMethod("resetCursorRects", resetCursorRects)) @panic("addMethod resetCursorRects failed");
             }
 
-            if (config.data().key_events) {
+            if (window_id.getConfig().key_events) {
                 if (!class.addMethod("keyDown:", keyDown)) @panic("addMethod keyDown failed");
                 if (!class.addMethod("keyUp:", keyUp)) @panic("addMethod keyUp failed");
                 if (!class.addMethod("flagsChanged:", flagsChanged)) @panic("addMethod flagsChanged failed");
             }
 
-            switch (config.data().timers) {
+            switch (window_id.getConfig().timers) {
                 .none => {},
                 .one, .type => {
                     if (!class.addMethod("handleTimer:", handleTimer)) @panic("addMethod handleTimer failed");
                 },
             }
 
-            if (config.data().dpi_events) {
+            if (window_id.getConfig().dpi_events) {
                 if (!class.addMethod("windowDidChangeBackingProperties:", windowDidChangeBackingProperties))
                     @panic("addMethod windowDidChangeBackingProperties failed");
             }
@@ -658,7 +635,7 @@ fn ZinView(
 
             _ = w.obj.msgSend(void, "makeFirstResponder:", .{self.obj});
 
-            if (config.data().mouse_events) {
+            if (window_id.getConfig().mouse_events) {
                 // Enable mouse move tracking even when mouse button is not pressed
                 _ = self.obj.msgSend(void, "setAcceptsTouchEvents:", .{true});
                 // Set up tracking area to receive mouse move events
@@ -680,7 +657,7 @@ fn ZinView(
                 _ = w.obj.msgSend(void, "setAcceptsMouseMovedEvents:", .{true});
             }
 
-            if (config.data().dpi_events) {
+            if (window_id.getConfig().dpi_events) {
                 // Register for DPI/backing scale factor changes
                 _ = notification_center.msgSend(void, "addObserver:selector:name:object:", .{
                     self.obj,
@@ -695,10 +672,7 @@ fn ZinView(
             _ = sender;
             const self: Self = .{ .obj = .{ .value = object_id } };
             _ = self;
-            switch (config) {
-                .static => classdef.callback(.close),
-                .dynamic => @panic("todo"), //class.callback(windowFromHwnd(hwnd), .close),
-            }
+            classdef.callback(.close);
             return false;
         }
         fn windowWillClose(object_id: objc.c.id, sel: objc.c.SEL, notification: objc.c.id) callconv(.c) void {
@@ -713,17 +687,14 @@ fn ZinView(
             _ = notification;
             const self: Self = .{ .obj = .{ .value = object_id } };
             _ = self;
-            switch (config) {
-                .static => classdef.callback(.dpi_change),
-                .dynamic => @panic("todo"),
-            }
+            classdef.callback(.dpi_change);
         }
 
         fn handleTimer(object_id: objc.c.id, sel: objc.c.SEL, timer_obj_id: objc.c.id) callconv(.c) void {
             _ = object_id;
             _ = sel;
 
-            switch (config.data().timers) {
+            switch (window_id.getConfig().timers) {
                 .none => unreachable,
                 .one, .type => {},
             }
@@ -732,10 +703,7 @@ fn ZinView(
             const timer_id = (NSNumber{ .obj = user_info }).unsignedLongValue();
             // Invalidate the timer after it's fired to avoid memory leaks
             // _ = timer_obj.msgSend(void, "invalidate", .{});
-            switch (config) {
-                .static => classdef.callback(.{ .timer = zin.timerIdFromInt(config.data().TimerId(), timer_id) }),
-                .dynamic => @panic("todo"), // Implement for dynamic windows
-            }
+            classdef.callback(.{ .timer = zin.timerIdFromInt(window_id.getConfig().TimerId(), timer_id) });
         }
 
         fn drawRect(object_id: objc.c.id, _: objc.c.SEL, rect: NSRect) callconv(.c) void {
@@ -747,16 +715,13 @@ fn ZinView(
             // defer gc.restoreGraphicsState();
 
             const ctx = gc.CGContext();
-            switch (config) {
-                .static => classdef.callback(.{
-                    .draw = .{
-                        .ctx = ctx,
-                        .client_size = self.any().getClientSize(),
-                        .window = self.window(),
-                    },
-                }),
-                .dynamic => @panic("todo"),
-            }
+            classdef.callback(.{
+                .draw = .{
+                    .ctx = ctx,
+                    .client_size = self.any().getClientSize(),
+                    .window = self.window(),
+                },
+            });
             c.CGContextFlush(ctx);
         }
 
@@ -804,15 +769,12 @@ fn ZinView(
             // to let the application code decide which cursor to use
             // const event = objc.Object{ .value = event_id };
             // const location = self.locationInView(event);
-            // switch (config) {
-            //     .static => classdef.callback(.{
-            //         .cursor_update = .{
-            //             .x = location.x,
-            //             .y = location.y,
-            //         },
-            //     }),
-            //     .dynamic => @panic("todo"),
-            // }
+            // classdef.callback(.{
+            //     .cursor_update = .{
+            //         .x = location.x,
+            //         .y = location.y,
+            //     },
+            // });
         }
 
         // Override resetCursorRects to define cursor regions in your view
@@ -849,17 +811,14 @@ fn ZinView(
         fn mouseEvent(self: Self, event: objc.Object, button: ?zin.MouseButtonState) void {
             const client_size = self.any().getClientSize();
             const location = self.getEventLoc(event, client_size.y);
-            switch (config) {
-                .static => classdef.callback(.{ .mouse = .{
-                    .position = .{
-                        .x = location.x,
-                        .y = location.y,
-                    },
-                    .button = button,
-                    .down = getMouseButtonsDown(event, button),
-                } }),
-                .dynamic => @panic("todo"),
-            }
+            classdef.callback(.{ .mouse = .{
+                .position = .{
+                    .x = location.x,
+                    .y = location.y,
+                },
+                .button = button,
+                .down = getMouseButtonsDown(event, button),
+            } });
         }
         fn mouseMoved(object_id: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.c) void {
             const self: Self = .{ .obj = .{ .value = object_id } };
@@ -945,10 +904,7 @@ fn ZinView(
                 },
             };
 
-            switch (config) {
-                .static => classdef.callback(.{ .key = key_event }),
-                .dynamic => @panic("todo"),
-            }
+            classdef.callback(.{ .key = key_event });
         }
 
         fn keyUp(object_id: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.c) void {
@@ -970,10 +926,7 @@ fn ZinView(
                 },
             };
 
-            switch (config) {
-                .static => classdef.callback(.{ .key = key_event }),
-                .dynamic => @panic("todo"),
-            }
+            classdef.callback(.{ .key = key_event });
         }
 
         fn flagsChanged(object_id: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.c) void {
@@ -1013,10 +966,7 @@ fn ZinView(
                 },
             };
 
-            switch (config) {
-                .static => classdef.callback(.{ .key = key_event }),
-                .dynamic => @panic("todo"),
-            }
+            classdef.callback(.{ .key = key_event });
         }
     };
 }

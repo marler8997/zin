@@ -96,7 +96,6 @@ fn disconnectNoOp() void {}
 pub const ConnectionPtr = if (platform_kind == .x11) *Connection else void;
 
 pub const WindowClass = platform.WindowClass;
-pub const DynamicWindow = platform.DynamicWindow;
 
 pub const VirtualKey = platform.VirtualKey;
 pub const ScanCode = platform.ScanCode;
@@ -313,17 +312,6 @@ fn makeTaggedUnion(fields: []const Field) type {
     return @Union(.auto, Tag, &names, &types, &@splat(.{}));
 }
 
-pub const WindowConfig = union(enum) {
-    static: StaticWindowId,
-    dynamic: WindowConfigData,
-    pub fn data(self: WindowConfig) WindowConfigData {
-        return switch (self) {
-            .static => |id| id.getConfig(),
-            .dynamic => |d| d,
-        };
-    }
-};
-
 pub const WindowConfigData = struct {
     window_size_events: bool,
     key_events: bool,
@@ -381,24 +369,24 @@ pub fn timerIdFromInt(comptime TimerId: type, int: anytype) TimerId {
     };
 }
 
-pub fn Callback(window_config: WindowConfig) type {
+pub fn Callback(window_id: StaticWindowId) type {
     return makeTaggedUnion(
         &([_]Field{
             .{ .name = "close", .type = void },
-            .{ .name = "draw", .type = Draw(window_config) },
-        } ++ (if (window_config.data().window_size_events) [_]Field{
+            .{ .name = "draw", .type = Draw(window_id) },
+        } ++ (if (window_id.getConfig().window_size_events) [_]Field{
             .{ .name = "window_size", .type = XY },
-        } else [_]Field{}) ++ (if (window_config.data().key_events) [_]Field{
+        } else [_]Field{}) ++ (if (window_id.getConfig().key_events) [_]Field{
             .{ .name = "key", .type = Key },
-        } else [_]Field{}) ++ (if (window_config.data().mouse_events) [_]Field{
+        } else [_]Field{}) ++ (if (window_id.getConfig().mouse_events) [_]Field{
             .{ .name = "mouse", .type = Mouse },
-        } else [_]Field{}) ++ (switch (window_config.data().timers) {
+        } else [_]Field{}) ++ (switch (window_id.getConfig().timers) {
             .none => [_]Field{},
             .one => [_]Field{.{ .name = "timer", .type = void }},
             .type => |t| [_]Field{.{ .name = "timer", .type = t }},
-        }) ++ (if (window_config.data().dpi_events) [_]Field{
+        }) ++ (if (window_id.getConfig().dpi_events) [_]Field{
             .{ .name = "dpi_change", .type = void },
-        } else [_]Field{}) ++ (if (window_config.data().win32.set_cursor_callback) [_]Field{
+        } else [_]Field{}) ++ (if (window_id.getConfig().win32.set_cursor_callback) [_]Field{
             .{ .name = "win32_set_cursor", .type = struct { result_ref: *isize, wparam: usize, lparam: isize } },
         } else [_]Field{})),
     );
@@ -421,19 +409,11 @@ pub const MaybeWin32Icon = struct {
     }
 };
 
-pub fn WindowClassDefinition(window_config: WindowConfig) type {
-    return switch (window_config) {
-        .static => struct {
-            callback: *const fn (Callback(window_config)) void,
-            win32_name: [*:0]const u16,
-            macos_view: [*:0]const u8,
-        },
-        .dynamic => struct {
-            callback: fn (DynamicWindow, Callback(window_config)) void,
-            // every distinct window class must also have a distict win32 name
-            win32_name: [*:0]const u16,
-            macos_view: [*:0]const u8,
-        },
+pub fn WindowClassDefinition(window_id: StaticWindowId) type {
+    return struct {
+        callback: *const fn (Callback(window_id)) void,
+        win32_name: [*:0]const u16,
+        macos_view: [*:0]const u8,
     };
 }
 
@@ -476,8 +456,6 @@ pub const WindowClassRuntimeConfig = struct {
     };
 };
 
-pub const registerDynamicWindowClass = platform.registerDynamicWindowClass;
-
 pub const WindowSizeInit = union(enum) {
     default,
     client_pixels: XY,
@@ -496,7 +474,6 @@ pub const CreateWindowError = error{
     WriteFailed,
     OutOfIds,
 };
-pub const createDynamicWindow = platform.createDynamicWindow;
 
 pub const Draw = platform.Draw;
 

@@ -13,6 +13,7 @@ pub const zin_config: zin.Config = .{
 const StaticWindowId = enum {
     main,
     testWin32,
+    extra,
     pub fn getConfig(self: StaticWindowId) zin.WindowConfigData {
         return switch (self) {
             .main => .{
@@ -37,26 +38,24 @@ const StaticWindowId = enum {
                 .win32 = .{ .render = .{ .gdi = .{} } },
                 .x11 = .{},
             },
+            .extra => .{
+                .window_size_events = true,
+                .key_events = false,
+                .mouse_events = false,
+                .dpi_events = false,
+                .timers = .none,
+                .background = .{ .r = 255, .g = 0, .b = 0 },
+                .dynamic_background = true,
+                .win32 = .{ .render = .{ .gdi = .{ .use_backbuffer = false } } },
+                .x11 = .{},
+            },
         };
     }
 };
 
 pub const panic = zin.panic(.{ .title = "Hello Panic!" });
 
-const extra_config: zin.WindowConfigData = .{
-    .window_size_events = false,
-    .key_events = false,
-    .mouse_events = false,
-    .dpi_events = false,
-    .timers = .none,
-    .background = .{ .r = 255, .g = 0, .b = 0 },
-    .dynamic_background = true,
-    .win32 = .{ .render = .{ .gdi = .{ .use_backbuffer = false } } },
-    .x11 = .{},
-};
-
 const global = struct {
-    var class_extra: ?zin.WindowClass = null;
     var last_animation: ?std.Io.Timestamp = null;
     var text_position: f32 = 0;
     var mouse_position: ?zin.XY = null;
@@ -66,9 +65,10 @@ const global = struct {
         .middle = false,
     };
     var test_win32_created: bool = false;
+    var extra_created: bool = false;
 };
 
-const test_win32_class: zin.WindowClassDefinition(.{ .static = .testWin32 }) = .{
+const test_win32_class: zin.WindowClassDefinition(.testWin32) = .{
     .callback = testWin32Callback,
     .win32_name = zin.L("TestWin32Window"),
     .macos_view = "TestWin32View",
@@ -108,6 +108,12 @@ pub fn main(init: std.process.Init.Minimal) !void {
         },
     });
     defer zin.staticWindow(.testWin32).unregisterClass();
+    zin.staticWindow(.extra).registerClass(.{
+        .callback = extraCallback,
+        .win32_name = zin.L("HelloExtraWindow"),
+        .macos_view = "HelloExtraView",
+    }, .win32_no_icons);
+    defer zin.staticWindow(.extra).unregisterClass();
 
     try zin.staticWindow(.main).create(.{
         .title = "Hello Example",
@@ -126,11 +132,12 @@ pub fn main(init: std.process.Init.Minimal) !void {
     global.test_win32_created = true;
     defer if (global.test_win32_created) zin.staticWindow(.testWin32).destroy();
     zin.staticWindow(.testWin32).show();
+    defer if (global.extra_created) zin.staticWindow(.extra).destroy();
 
     try zin.mainLoop();
 }
 
-fn callback(cb: zin.Callback(.{ .static = .main })) void {
+fn callback(cb: zin.Callback(.main)) void {
     switch (cb) {
         .close => zin.quitMainLoop(),
         .window_size => {},
@@ -168,7 +175,7 @@ fn callback(cb: zin.Callback(.{ .static = .main })) void {
             d.rect(.ltwh(animate.x, size.y - animate.y, rect_size, rect_size), .red);
             const margin_left = zin.scale(i32, 10, dpi_scale.x);
             const top = zin.scale(i32, 50, dpi_scale.y);
-            d.text("Press 'n' to create a new window.", margin_left, top, .white);
+            d.text("Press 'n' to open the extra window.", margin_left, top, .white);
             {
                 var str_buf: [100]u8 = undefined;
                 const str = std.fmt.bufPrint(&str_buf, "Mouse left:{s} right:{s} middle:{s}", .{
@@ -188,24 +195,17 @@ fn callback(cb: zin.Callback(.{ .static = .main })) void {
             var keyboard_state: zin.UnicodeKeyboardState = .init();
             const utf8 = key.utf8(keyboard_state.ref());
             if (null != std.mem.findScalar(u8, utf8.slice(), 'n')) {
-                if (global.class_extra == null) {
-                    global.class_extra = zin.registerDynamicWindowClass(extra_config, .{
-                        .callback = extraCallback,
-                        .win32_name = zin.L("HelloExtraWindow"),
-                        .macos_view = "HelloExtraView",
-                    }, .{
-                        .win32_icon_large = .none,
-                        .win32_icon_small = .none,
-                    });
+                if (!global.extra_created) {
+                    zin.staticWindow(.extra).create(.{
+                        .title = "Extra Window!",
+                        .size = .{ .window_points = .{ .x = 200, .y = 150 } },
+                        .pos = null,
+                    }) catch |e| std.debug.panic("createWindow failed with {s}", .{@errorName(e)});
+                    global.extra_created = true;
+                    // TODO: place the new window on top of the current
+                    //       one but don't have it take the input focus
+                    zin.staticWindow(.extra).show();
                 }
-                const w = zin.createDynamicWindow(global.class_extra.?, .{
-                    .title = "Extra Window!",
-                    .size = .{ .window_points = .{ .x = 200, .y = 150 } },
-                    .pos = null,
-                }) catch |e| std.debug.panic("createWindow failed with {s}", .{@errorName(e)});
-                // TODO: place the new window on top of the current
-                //       one but don't have it take the input focus
-                w.show();
                 zin.staticWindow(.main).foreground();
             }
         },
@@ -228,7 +228,7 @@ fn testWin32Wndproc(
     lparam: zin.LPARAM,
 ) callconv(.winapi) zin.LRESULT {
     std.log.info("TestWin32: msg={} wparam={} lparam={}", .{ msg, lparam, wparam });
-    return zin.platform.makeWndProc(.{ .static = .testWin32 }, test_win32_class)(
+    return zin.platform.makeWndProc(.testWin32, test_win32_class)(
         hwnd,
         msg,
         wparam,
@@ -236,7 +236,7 @@ fn testWin32Wndproc(
     );
 }
 
-fn testWin32Callback(cb: zin.Callback(.{ .static = .testWin32 })) void {
+fn testWin32Callback(cb: zin.Callback(.testWin32)) void {
     switch (cb) {
         .close => {
             zin.staticWindow(.testWin32).destroy();
@@ -250,12 +250,13 @@ fn testWin32Callback(cb: zin.Callback(.{ .static = .testWin32 })) void {
     }
 }
 
-fn extraCallback(
-    window: zin.DynamicWindow,
-    cb: zin.Callback(.{ .dynamic = extra_config }),
-) void {
+fn extraCallback(cb: zin.Callback(.extra)) void {
     switch (cb) {
-        .close => window.destroy(),
+        .close => {
+            zin.staticWindow(.extra).destroy();
+            global.extra_created = false;
+        },
+        .window_size => {},
         .draw => |d| {
             //d.clear(.full_red);
             d.clear();
