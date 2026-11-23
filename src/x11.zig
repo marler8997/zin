@@ -537,7 +537,7 @@ const StaticWindowCommonState = union(enum) {
 fn StaticWindowCustomState(window_id: zin.StaticWindowId) type {
     return struct {
         client_size: if (window_id.getConfig().window_size_events)
-            zin.XY
+            zin.XY(i32)
         else
             void = if (window_id.getConfig().window_size_events)
             .{ .x = 0, .y = 0 }
@@ -680,7 +680,7 @@ pub fn staticWindow(window_id: zin.StaticWindowId) type {
             global.static_window_common_states[@backingInt(window_id)] = .not_created;
             global.staticWindowCustomState(window_id).onDestroyed();
         }
-        pub fn getClientSize() zin.XY {
+        pub fn getClientSize() zin.XY(i32) {
             if (!window_id.getConfig().window_size_events) @compileError("getClientSize disabled because window_size_events is false");
             return global.staticWindowCustomState(window_id).client_size;
         }
@@ -713,7 +713,7 @@ pub fn gcFromWindow(id: x11.Window) x11.GraphicsContext {
     const off = global.conn.?.id_range.offset(@fromBackingInt(@intCast(@backingInt(id)))).?;
     return global.conn.?.id_range.addAssumeCapacity(off + 1).graphicsContext();
 }
-fn windowPixelSizeFromInit(init: zin.WindowSizeInit, dpi_scale: DpiScale) zin.XY {
+fn windowPixelSizeFromInit(init: zin.WindowSizeInit, dpi_scale: DpiScale) zin.XY(i32) {
     return switch (init) {
         .default => @panic("todo"),
         // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
@@ -754,8 +754,8 @@ pub const CreateWindowOptions = struct {
 
 fn createWindow(
     config: *const zin.WindowConfigData,
-    size: zin.XY,
-    maybe_pos: ?zin.XY,
+    size: zin.XY(i32),
+    maybe_pos: ?zin.XY(i32),
     bg: u32,
     id: x11.Window,
     opt: *const CreateWindowOptions,
@@ -912,7 +912,7 @@ fn mouseButtonFromMsg(detail: u8) ?zin.MouseButtonId {
 }
 
 /// The X server reports a wheel as presses of buttons 4 to 7, one per notch.
-fn mouseScrollFromMsg(detail: u8) ?zin.MouseScroll {
+fn mouseScrollFromMsg(detail: u8) ?zin.XY(f32) {
     return switch (detail) {
         4 => .{ .x = 0, .y = 1 },
         5 => .{ .x = 0, .y = -1 },
@@ -936,7 +936,7 @@ fn drawStaticWindow(comptime window_id: zin.StaticWindowId) error{WriteFailed}!e
     const window = global.conn.?.staticWindowId(window_id);
 
     if (state.presenter == null) {
-        const client_size = if (config.window_size_events) state.client_size else zin.XY{ .x = 1, .y = 1 };
+        const client_size = if (config.window_size_events) state.client_size else zin.XY(i32){ .x = 1, .y = 1 };
         state.presenter = .{
             .opcode_base = global.conn.?.present_opcode_base,
             .depth = global.conn.?.depth,
@@ -1275,7 +1275,7 @@ pub fn x11HandleMessage(source: *x11.Source, msg_kind: x11.ServerMsgKind) !void 
                 log.warn("no mapping for X11 button {} to zin (ButtonPress)", .{event.button});
                 return;
             };
-            const pos: zin.XY = .{
+            const pos: zin.XY(i32) = .{
                 .x = @intCast(event.event_x),
                 .y = @intCast(event.event_y),
             };
@@ -1304,7 +1304,7 @@ pub fn x11HandleMessage(source: *x11.Source, msg_kind: x11.ServerMsgKind) !void 
                 log.warn("no mapping for X11 button {} to zin (ButtonRelease)", .{event.button});
                 return;
             };
-            const pos: zin.XY = .{
+            const pos: zin.XY(i32) = .{
                 .x = @intCast(event.event_x),
                 .y = @intCast(event.event_y),
             };
@@ -1333,7 +1333,7 @@ pub fn x11HandleMessage(source: *x11.Source, msg_kind: x11.ServerMsgKind) !void 
         // },
         .MotionNotify => {
             const event = try source.read2(.MotionNotify);
-            const pos: zin.XY = .{
+            const pos: zin.XY(i32) = .{
                 .x = @intCast(event.event_x),
                 .y = @intCast(event.event_y),
             };
@@ -1485,7 +1485,7 @@ pub fn Draw(window_id: zin.StaticWindowId) type {
         window: x11.Window,
         pixmap: x11.Pixmap,
         text_id_check: *zin.TextIdCheck(window_id.getConfig().TextId),
-        client_size: if (window_id.getConfig().window_size_events) zin.XY else void,
+        client_size: if (window_id.getConfig().window_size_events) zin.XY(i32) else void,
         background: if (window_id.getConfig().dynamic_background) zin.Rgb8 else void,
 
         const Self = @This();
@@ -1494,7 +1494,7 @@ pub fn Draw(window_id: zin.StaticWindowId) type {
             return self.pixmap.drawable();
         }
 
-        pub fn getDpiScale(self: *const Self) struct { x: f32, y: f32 } {
+        pub fn getDpiScale(self: *const Self) zin.XY(f32) {
             _ = self;
             if (!support_dpi_events) @compileError("cannot call getDpiScale without setting dpi_events to true");
             return .{ .x = global.conn.?.dpi_scale.val, .y = global.conn.?.dpi_scale.val };

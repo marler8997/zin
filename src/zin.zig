@@ -328,21 +328,20 @@ pub const Key = struct {
     }
 };
 
-pub const XY = struct {
-    x: i32,
-    y: i32,
-};
+pub fn XY(comptime T: type) type {
+    return struct {
+        x: T,
+        y: T,
+    };
+}
 
 pub const MouseButtonId = enum { left, right, middle };
 pub const MouseButtonState = struct {
     id: MouseButtonId,
     state: KeyState,
 };
-/// How far a mouse wheel turned, in notches of a wheel. Positive y is away
-/// from the user, which scrolls up, and positive x is to the right.
-pub const MouseScroll = struct { x: f32, y: f32 };
 pub const Mouse = struct {
-    position: XY,
+    position: XY(i32),
     down: MouseButtonsDown,
     kind: Kind,
 
@@ -350,8 +349,9 @@ pub const Mouse = struct {
         move,
         /// A button went up or down.
         button: MouseButtonState,
-        /// The wheel turned.
-        scroll: MouseScroll,
+        /// How far the wheel turned, in notches of a wheel. Positive y is away
+        /// from the user, which scrolls up, and positive x is to the right.
+        scroll: XY(f32),
     };
 };
 pub const MouseButtonsDown = struct {
@@ -446,7 +446,7 @@ pub fn Callback(window_id: StaticWindowId) type {
             .{ .name = "close", .type = void },
             .{ .name = "draw", .type = Draw(window_id) },
         } ++ (if (window_id.getConfig().window_size_events) [_]Field{
-            .{ .name = "window_size", .type = XY },
+            .{ .name = "window_size", .type = XY(i32) },
         } else [_]Field{}) ++ (if (window_id.getConfig().key_events) [_]Field{
             .{ .name = "key", .type = Key },
         } else [_]Field{}) ++ (if (window_id.getConfig().mouse_events) [_]Field{
@@ -529,15 +529,15 @@ pub const WindowClassRuntimeConfig = struct {
 
 pub const WindowSizeInit = union(enum) {
     default,
-    client_pixels: XY,
-    client_points: XY,
-    window_pixels: XY,
-    window_points: XY,
+    client_pixels: XY(i32),
+    client_points: XY(i32),
+    window_pixels: XY(i32),
+    window_points: XY(i32),
 };
 pub const CreateWindowOptions = struct {
     title: [:0]const u8,
     size: WindowSizeInit,
-    pos: ?XY,
+    pos: ?XY(i32),
     platform: platform.CreateWindowOptions = .{},
 };
 
@@ -610,7 +610,7 @@ pub const Rect = struct {
         return .{ .left = left, .top = top, .right = left + width, .bottom = top + height };
     }
 
-    pub fn contains(self: Rect, p: XY) bool {
+    pub fn contains(self: Rect, p: XY(i32)) bool {
         return p.x >= self.left and p.x < self.right and p.y >= self.top and p.y < self.bottom;
     }
 };

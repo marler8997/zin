@@ -66,14 +66,14 @@ pub const panic = zin.panic(.{ .title = "Hello Panic!" });
 const global = struct {
     var last_animation: ?std.Io.Timestamp = null;
     var text_position: f32 = 0;
-    var mouse_position: ?zin.XY = null;
+    var mouse_position: ?zin.XY(i32) = null;
     var mouse_down: zin.MouseButtonsDown = .{
         .left = false,
         .right = false,
         .middle = false,
     };
     /// How far the mouse wheel has turned in all.
-    var scroll: zin.MouseScroll = .{ .x = 0, .y = 0 };
+    var scroll: zin.XY(f32) = .{ .x = 0, .y = 0 };
     var test_win32_created: bool = false;
     var extra_created: bool = false;
 };
@@ -168,7 +168,7 @@ fn callback(cb: zin.Callback(.main)) void {
 
             const size = zin.staticWindow(.main).getClientSize();
             d.clear();
-            const animate: zin.XY = .{
+            const animate: zin.XY(i32) = .{
                 .x = @intFromFloat(@round(@as(f32, @floatFromInt(size.x)) * global.text_position)),
                 .y = @intFromFloat(@round(@as(f32, @floatFromInt(size.y)) * global.text_position)),
             };
@@ -178,7 +178,7 @@ fn callback(cb: zin.Callback(.main)) void {
             if (zin.platform_kind == .win32 or zin.platform_kind == .x11) {
                 // the mouse wheel moves the pentagon, 10 points a notch, and it
                 // wraps around to the other side of the window
-                const center: zin.XY = .{
+                const center: zin.XY(i32) = .{
                     .x = zin.scale(i32, 200, dpi_scale.x),
                     .y = zin.scale(i32, 157, dpi_scale.y),
                 };

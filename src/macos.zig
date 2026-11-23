@@ -152,7 +152,7 @@ pub fn staticWindow(window_id: zin.StaticWindowId) type {
             );
         }
         pub fn destroy() void {}
-        pub fn getClientSize() zin.XY {
+        pub fn getClientSize() zin.XY(i32) {
             const view = global.static_windows[@backingInt(window_id)].?.contentView();
             return (AnyZinView{ .obj = view }).getClientSize();
         }
@@ -452,11 +452,11 @@ pub fn Draw(window_id: zin.StaticWindowId) type {
     return struct {
         const Self = @This();
         ctx: *c.CGContext,
-        client_size: zin.XY,
+        client_size: zin.XY(i32),
         window: NSWindow,
         text_id_check: *zin.TextIdCheck(window_id.getConfig().TextId),
 
-        pub fn getDpiScale(self: *const Self) struct { x: f32, y: f32 } {
+        pub fn getDpiScale(self: *const Self) zin.XY(f32) {
             const scale: f32 = @floatCast(self.window.obj.msgSend(f64, "backingScaleFactor", .{}));
             return .{ .x = scale, .y = scale };
         }
@@ -543,11 +543,11 @@ const AnyZinView = struct {
         self.obj.msgSend(void, "setNeedsDisplay:", .{needs});
     }
 
-    pub fn getClientSize(self: AnyZinView) zin.XY {
+    pub fn getClientSize(self: AnyZinView) zin.XY(i32) {
         const bounds = self.obj.msgSend(c.CGRect, "bounds", .{});
         std.debug.assert(bounds.origin.x == 0);
         std.debug.assert(bounds.origin.y == 0);
-        const size: zin.XY = .{
+        const size: zin.XY(i32) = .{
             .x = @intFromFloat(bounds.size.width),
             .y = @intFromFloat(bounds.size.height),
         };
@@ -779,7 +779,7 @@ fn ZinView(
             return true; // Return true to accept resigning
         }
 
-        fn getEventLoc(self: Self, event: objc.Object, client_height: i32) zin.XY {
+        fn getEventLoc(self: Self, event: objc.Object, client_height: i32) zin.XY(i32) {
             const window_point = event.msgSend(NSPoint, "locationInWindow", .{});
             const view_point = self.obj.msgSend(NSPoint, "convertPoint:fromView:", .{
                 window_point,

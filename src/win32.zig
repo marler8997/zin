@@ -156,7 +156,7 @@ const Window = enum(usize) {
             win32.GetLastError(),
         );
     }
-    pub fn getClientSize(self: Window) zin.XY {
+    pub fn getClientSize(self: Window) zin.XY(i32) {
         const size = win32.getClientSize(self.asHwnd());
         return .{ .x = size.cx, .y = size.cy };
     }
@@ -401,7 +401,7 @@ pub fn staticWindow(comptime window_id: zin.StaticWindowId) type {
         pub fn destroy() void {
             global.static_windows[@backingInt(window_id)].?.destroy();
         }
-        pub fn getClientSize() zin.XY {
+        pub fn getClientSize() zin.XY(i32) {
             return global.static_windows[@backingInt(window_id)].?.getClientSize();
         }
         pub fn show() void {
@@ -429,11 +429,11 @@ pub fn staticWindow(comptime window_id: zin.StaticWindowId) type {
 }
 
 fn windowSizeFromClient(
-    client_size: zin.XY,
+    client_size: zin.XY(i32),
     style: win32.WINDOW_STYLE,
     style_ex: win32.WINDOW_EX_STYLE,
     dpi: u32,
-) zin.XY {
+) zin.XY(i32) {
     var rect: win32.RECT = .{
         .left = 0,
         .top = 0,
@@ -473,7 +473,7 @@ fn createWindow(class: WindowClass, opt: *const zin.CreateWindowOptions) zin.Cre
         .BORDER = 1,
     };
 
-    const create_size: zin.XY = blk: {
+    const create_size: zin.XY(i32) = blk: {
         break :blk switch (opt.size) {
             .default => .{ .x = win32.CW_USEDEFAULT, .y = win32.CW_USEDEFAULT },
             .client_pixels => |s| s,
@@ -482,7 +482,7 @@ fn createWindow(class: WindowClass, opt: *const zin.CreateWindowOptions) zin.Cre
             .window_points => |s| s, // we'll adjust the size below (after we know the REAL DPI)
         };
     };
-    const create_pos: zin.XY = if (opt.pos) |pos|
+    const create_pos: zin.XY(i32) = if (opt.pos) |pos|
         .{ .x = pos.x, .y = pos.y }
     else
         .{ .x = win32.CW_USEDEFAULT, .y = win32.CW_USEDEFAULT };
@@ -506,7 +506,7 @@ fn createWindow(class: WindowClass, opt: *const zin.CreateWindowOptions) zin.Cre
     errdefer win32.destroyWindow(hwnd);
 
     const dpi = win32.dpiFromHwnd(hwnd);
-    const maybe_window_size: ?zin.XY = blk: switch (opt.size) {
+    const maybe_window_size: ?zin.XY(i32) = blk: switch (opt.size) {
         .default => break :blk null,
         .client_pixels => |client_size| break :blk windowSizeFromClient(client_size, style, style_ex, dpi),
         .client_points => |client_size| {
@@ -1129,7 +1129,7 @@ fn GdiDraw(window_id: zin.StaticWindowId) type {
 
         const Self = @This();
 
-        pub fn getDpiScale(self: *const Self) struct { x: f32, y: f32 } {
+        pub fn getDpiScale(self: *const Self) zin.XY(f32) {
             const scale: f32 = @as(f32, @floatFromInt(win32.dpiFromHwnd(self.hwnd))) / 96.0;
             return .{ .x = scale, .y = scale };
         }
@@ -1209,12 +1209,12 @@ fn D2dDraw(window_id: zin.StaticWindowId) type {
         /// app's own Direct2D calls. Its units are pixels.
         d2d: *win32.ID2D1RenderTarget,
         /// The size of `d2d`.
-        client_size: zin.XY,
+        client_size: zin.XY(i32),
         background: if (window_id.getConfig().dynamic_background) zin.Rgb8 else void,
 
         const Self = @This();
 
-        pub fn getDpiScale(self: *const Self) struct { x: f32, y: f32 } {
+        pub fn getDpiScale(self: *const Self) zin.XY(f32) {
             const scale: f32 = @as(f32, @floatFromInt(self.dpi)) / 96.0;
             return .{ .x = scale, .y = scale };
         }
