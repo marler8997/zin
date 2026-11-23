@@ -908,7 +908,7 @@ pub fn makeWndProc(
                         class.callback(
                             .{ .mouse = .{
                                 .position = .{ .x = pos.x, .y = pos.y },
-                                .button = null,
+                                .kind = .move,
                                 .down = mouseDownFromWparam(wparam),
                             } },
                         );
@@ -921,7 +921,7 @@ pub fn makeWndProc(
                         class.callback(
                             .{ .mouse = .{
                                 .position = .{ .x = pos.x, .y = pos.y },
-                                .button = .{ .id = .left, .state = .down },
+                                .kind = .{ .button = .{ .id = .left, .state = .down } },
                                 .down = mouseDownFromWparam(wparam),
                             } },
                         );
@@ -934,7 +934,7 @@ pub fn makeWndProc(
                         class.callback(
                             .{ .mouse = .{
                                 .position = .{ .x = pos.x, .y = pos.y },
-                                .button = .{ .id = .left, .state = .up },
+                                .kind = .{ .button = .{ .id = .left, .state = .up } },
                                 .down = mouseDownFromWparam(wparam),
                             } },
                         );
@@ -947,7 +947,7 @@ pub fn makeWndProc(
                         class.callback(
                             .{ .mouse = .{
                                 .position = .{ .x = pos.x, .y = pos.y },
-                                .button = .{ .id = .right, .state = .down },
+                                .kind = .{ .button = .{ .id = .right, .state = .down } },
                                 .down = mouseDownFromWparam(wparam),
                             } },
                         );
@@ -960,7 +960,7 @@ pub fn makeWndProc(
                         class.callback(
                             .{ .mouse = .{
                                 .position = .{ .x = pos.x, .y = pos.y },
-                                .button = .{ .id = .right, .state = .up },
+                                .kind = .{ .button = .{ .id = .right, .state = .up } },
                                 .down = mouseDownFromWparam(wparam),
                             } },
                         );
@@ -973,7 +973,7 @@ pub fn makeWndProc(
                         class.callback(
                             .{ .mouse = .{
                                 .position = .{ .x = pos.x, .y = pos.y },
-                                .button = .{ .id = .middle, .state = .down },
+                                .kind = .{ .button = .{ .id = .middle, .state = .down } },
                                 .down = mouseDownFromWparam(wparam),
                             } },
                         );
@@ -986,10 +986,25 @@ pub fn makeWndProc(
                         class.callback(
                             .{ .mouse = .{
                                 .position = .{ .x = pos.x, .y = pos.y },
-                                .button = .{ .id = .middle, .state = .up },
+                                .kind = .{ .button = .{ .id = .middle, .state = .up } },
                                 .down = mouseDownFromWparam(wparam),
                             } },
                         );
+                    }
+                    return 0;
+                },
+                win32.WM_MOUSEWHEEL, win32.WM_MOUSEHWHEEL => {
+                    if (comptime window_id.getConfig().mouse_events) {
+                        // unlike the other mouse messages, this position is in screen coordinates
+                        var pos = win32.pointFromLparam(lparam);
+                        if (0 == win32.ScreenToClient(hwnd, &pos)) win32.panicWin32("ScreenToClient", win32.GetLastError());
+                        const delta: i16 = @bitCast(win32.hiword(wparam));
+                        const notches = @as(f32, @floatFromInt(delta)) / 120.0;
+                        class.callback(.{ .mouse = .{
+                            .position = .{ .x = pos.x, .y = pos.y },
+                            .kind = .{ .scroll = if (msg == win32.WM_MOUSEWHEEL) .{ .x = 0, .y = notches } else .{ .x = notches, .y = 0 } },
+                            .down = mouseDownFromWparam(wparam),
+                        } });
                     }
                     return 0;
                 },

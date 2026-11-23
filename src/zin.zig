@@ -338,10 +338,21 @@ pub const MouseButtonState = struct {
     id: MouseButtonId,
     state: KeyState,
 };
+/// How far a mouse wheel turned, in notches of a wheel. Positive y is away
+/// from the user, which scrolls up, and positive x is to the right.
+pub const MouseScroll = struct { x: f32, y: f32 };
 pub const Mouse = struct {
     position: XY,
-    button: ?MouseButtonState,
     down: MouseButtonsDown,
+    kind: Kind,
+
+    pub const Kind = union(enum) {
+        move,
+        /// A button went up or down.
+        button: MouseButtonState,
+        /// The wheel turned.
+        scroll: MouseScroll,
+    };
 };
 pub const MouseButtonsDown = struct {
     left: bool,

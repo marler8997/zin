@@ -592,6 +592,7 @@ fn ZinView(
 
             if (window_id.getConfig().mouse_events) {
                 if (!class.addMethod("mouseMoved:", mouseMoved)) @panic("addMethod mouseMoved failed");
+                if (!class.addMethod("scrollWheel:", scrollWheel)) @panic("addMethod scrollWheel failed");
                 if (!class.addMethod("mouseDragged:", mouseDragged)) @panic("addMethod mouseDragged failed");
                 if (!class.addMethod("rightMouseDragged:", rightMouseDragged)) @panic("addMethod rightMouseDragged failed");
                 if (!class.addMethod("otherMouseDragged:", otherMouseDragged)) @panic("addMethod otherMouseDragged failed");
@@ -841,7 +842,7 @@ fn ZinView(
             return down;
         }
 
-        fn mouseEvent(self: Self, event: objc.Object, button: ?zin.MouseButtonState) void {
+        fn mouseEvent(self: Self, event: objc.Object, kind: zin.Mouse.Kind) void {
             const client_size = self.any().getClientSize();
             const location = self.getEventLoc(event, client_size.y);
             classdef.callback(.{ .mouse = .{
@@ -849,52 +850,63 @@ fn ZinView(
                     .x = location.x,
                     .y = location.y,
                 },
-                .button = button,
-                .down = getMouseButtonsDown(event, button),
+                .kind = kind,
+                .down = getMouseButtonsDown(event, switch (kind) {
+                    .button => |button| button,
+                    .move, .scroll => null,
+                }),
+            } });
+        }
+        fn scrollWheel(object_id: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.c) void {
+            const self: Self = .{ .obj = .{ .value = object_id } };
+            const event = objc.Object{ .value = event_id };
+            self.mouseEvent(event, .{ .scroll = .{
+                .x = @floatCast(event.msgSend(f64, "deltaX", .{})),
+                .y = @floatCast(event.msgSend(f64, "deltaY", .{})),
             } });
         }
         fn mouseMoved(object_id: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.c) void {
             const self: Self = .{ .obj = .{ .value = object_id } };
             const event = objc.Object{ .value = event_id };
-            self.mouseEvent(event, null);
+            self.mouseEvent(event, .move);
         }
         fn mouseDragged(object_id: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.c) void {
             const self: Self = .{ .obj = .{ .value = object_id } };
             const event = objc.Object{ .value = event_id };
             // TODO: verify the left mouse is down?
-            self.mouseEvent(event, null);
+            self.mouseEvent(event, .move);
         }
         fn rightMouseDragged(object_id: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.c) void {
             const self: Self = .{ .obj = .{ .value = object_id } };
             const event = objc.Object{ .value = event_id };
             // TODO: verify the right mouse is down?
-            self.mouseEvent(event, null);
+            self.mouseEvent(event, .move);
         }
         fn otherMouseDragged(object_id: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.c) void {
             const self: Self = .{ .obj = .{ .value = object_id } };
             const event = objc.Object{ .value = event_id };
             // TODO: verify the other mouse is down?
-            self.mouseEvent(event, null);
+            self.mouseEvent(event, .move);
         }
         fn mouseDown(object_id: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.c) void {
             const self: Self = .{ .obj = .{ .value = object_id } };
             const event = objc.Object{ .value = event_id };
-            self.mouseEvent(event, .{ .id = .left, .state = .down });
+            self.mouseEvent(event, .{ .button = .{ .id = .left, .state = .down } });
         }
         fn mouseUp(object_id: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.c) void {
             const self: Self = .{ .obj = .{ .value = object_id } };
             const event = objc.Object{ .value = event_id };
-            self.mouseEvent(event, .{ .id = .left, .state = .up });
+            self.mouseEvent(event, .{ .button = .{ .id = .left, .state = .up } });
         }
         fn rightMouseDown(object_id: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.c) void {
             const self: Self = .{ .obj = .{ .value = object_id } };
             const event = objc.Object{ .value = event_id };
-            self.mouseEvent(event, .{ .id = .right, .state = .down });
+            self.mouseEvent(event, .{ .button = .{ .id = .right, .state = .down } });
         }
         fn rightMouseUp(object_id: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.c) void {
             const self: Self = .{ .obj = .{ .value = object_id } };
             const event = objc.Object{ .value = event_id };
-            self.mouseEvent(event, .{ .id = .right, .state = .up });
+            self.mouseEvent(event, .{ .button = .{ .id = .right, .state = .up } });
         }
         fn otherMouseDown(object_id: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.c) void {
             const self: Self = .{ .obj = .{ .value = object_id } };
@@ -902,7 +914,7 @@ fn ZinView(
             // Get button number to check if it's middle button (usually 2)
             const buttonNumber = event.msgSend(c_int, "buttonNumber", .{});
             if (buttonNumber == 2) {
-                self.mouseEvent(event, .{ .id = .middle, .state = .down });
+                self.mouseEvent(event, .{ .button = .{ .id = .middle, .state = .down } });
             }
         }
         fn otherMouseUp(object_id: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.c) void {
@@ -911,7 +923,7 @@ fn ZinView(
             // Get button number to check if it's middle button (usually 2)
             const buttonNumber = event.msgSend(c_int, "buttonNumber", .{});
             if (buttonNumber == 2) {
-                self.mouseEvent(event, .{ .id = .middle, .state = .up });
+                self.mouseEvent(event, .{ .button = .{ .id = .middle, .state = .up } });
             }
         }
 

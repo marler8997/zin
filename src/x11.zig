@@ -911,6 +911,17 @@ fn mouseButtonFromMsg(detail: u8) ?zin.MouseButtonId {
     };
 }
 
+/// The X server reports a wheel as presses of buttons 4 to 7, one per notch.
+fn mouseScrollFromMsg(detail: u8) ?zin.MouseScroll {
+    return switch (detail) {
+        4 => .{ .x = 0, .y = 1 },
+        5 => .{ .x = 0, .y = -1 },
+        6 => .{ .x = -1, .y = 0 },
+        7 => .{ .x = 1, .y = 0 },
+        else => null,
+    };
+}
+
 fn drawStaticWindow(comptime window_id: zin.StaticWindowId) error{WriteFailed}!enum { not_created, rendered, not_ready } {
     if (global.conn.?.write_error) |e| return e;
 
@@ -1244,6 +1255,22 @@ pub fn x11HandleMessage(source: *x11.Source, msg_kind: x11.ServerMsgKind) !void 
         },
         .ButtonPress => {
             const event = try source.read2(.ButtonPress);
+            if (mouseScrollFromMsg(event.button)) |scroll| {
+                if (global.conn.?.staticWindowFromX11Id(event.event)) |w| switch (w) {
+                    inline else => |window_id| if (window_id.getConfig().mouse_events) {
+                        staticCallback(window_id)(.{ .mouse = .{
+                            .position = .{ .x = @intCast(event.event_x), .y = @intCast(event.event_y) },
+                            .kind = .{ .scroll = scroll },
+                            .down = .{
+                                .left = event.state.button1,
+                                .right = event.state.button3,
+                                .middle = event.state.button2,
+                            },
+                        } });
+                    },
+                } else @panic("X11 event for a window zin did not create");
+                return;
+            }
             const button_id = mouseButtonFromMsg(event.button) orelse {
                 log.warn("no mapping for X11 button {} to zin (ButtonPress)", .{event.button});
                 return;
@@ -1258,7 +1285,7 @@ pub fn x11HandleMessage(source: *x11.Source, msg_kind: x11.ServerMsgKind) !void 
                     if (config.mouse_events) {
                         staticCallback(window_id)(.{ .mouse = .{
                             .position = pos,
-                            .button = .{ .id = button_id, .state = .down },
+                            .kind = .{ .button = .{ .id = button_id, .state = .down } },
                             .down = .{
                                 .left = event.state.button1 or (button_id == .left),
                                 .right = event.state.button3 or (button_id == .right),
@@ -1271,6 +1298,8 @@ pub fn x11HandleMessage(source: *x11.Source, msg_kind: x11.ServerMsgKind) !void 
         },
         .ButtonRelease => {
             const event = try source.read2(.ButtonRelease);
+            // the press of a wheel button is the whole event
+            if (mouseScrollFromMsg(event.button) != null) return;
             const button_id = mouseButtonFromMsg(event.button) orelse {
                 log.warn("no mapping for X11 button {} to zin (ButtonRelease)", .{event.button});
                 return;
@@ -1285,7 +1314,7 @@ pub fn x11HandleMessage(source: *x11.Source, msg_kind: x11.ServerMsgKind) !void 
                     if (config.mouse_events) {
                         staticCallback(window_id)(.{ .mouse = .{
                             .position = pos,
-                            .button = .{ .id = button_id, .state = .up },
+                            .kind = .{ .button = .{ .id = button_id, .state = .up } },
                             .down = .{
                                 .left = event.state.button1 and (button_id != .left),
                                 .right = event.state.button3 and (button_id != .right),
@@ -1314,7 +1343,7 @@ pub fn x11HandleMessage(source: *x11.Source, msg_kind: x11.ServerMsgKind) !void 
                     if (config.mouse_events) {
                         staticCallback(window_id)(.{ .mouse = .{
                             .position = pos,
-                            .button = null,
+                            .kind = .move,
                             .down = .{
                                 .left = event.state.button1,
                                 .right = event.state.button3,

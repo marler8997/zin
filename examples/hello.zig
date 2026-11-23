@@ -24,7 +24,7 @@ const StaticWindowId = enum {
                 .key_events = true,
                 .mouse_events = true,
                 .dpi_events = true,
-                .TextId = enum { press_n, mouse_buttons, weeee, mouse },
+                .TextId = enum { press_n, mouse_buttons, scroll, weeee, mouse },
                 .timers = .one,
                 .background = .{ .r = 49, .g = 49, .b = 49 },
                 .dynamic_background = false,
@@ -72,6 +72,8 @@ const global = struct {
         .right = false,
         .middle = false,
     };
+    /// How far the mouse wheel has turned in all.
+    var scroll: zin.MouseScroll = .{ .x = 0, .y = 0 };
     var test_win32_created: bool = false;
     var extra_created: bool = false;
 };
@@ -174,12 +176,20 @@ fn callback(cb: zin.Callback(.main)) void {
 
             // currenly only supported on windows
             if (zin.platform_kind == .win32 or zin.platform_kind == .x11) {
+                // the mouse wheel moves the pentagon, 10 points a notch, and it
+                // wraps around to the other side of the window
+                const center: zin.XY = .{
+                    .x = zin.scale(i32, 200, dpi_scale.x),
+                    .y = zin.scale(i32, 157, dpi_scale.y),
+                };
+                const x = @mod(center.x + zin.scale(i32, @intFromFloat(@round(10 * global.scroll.x)), dpi_scale.x), @max(size.x, 1)) - center.x;
+                const y = @mod(center.y + zin.scale(i32, @intFromFloat(@round(-10 * global.scroll.y)), dpi_scale.y), @max(size.y, 1)) - center.y;
                 var pentagon = [5]zin.PolygonPoint{
-                    .xy(zin.scale(i32, 200, dpi_scale.x), zin.scale(i32, 127, dpi_scale.y)), // top
-                    .xy(zin.scale(i32, 232, dpi_scale.x), zin.scale(i32, 150, dpi_scale.y)), // top right
-                    .xy(zin.scale(i32, 220, dpi_scale.x), zin.scale(i32, 187, dpi_scale.y)), // bottom right
-                    .xy(zin.scale(i32, 180, dpi_scale.x), zin.scale(i32, 187, dpi_scale.y)), // bottom left
-                    .xy(zin.scale(i32, 168, dpi_scale.x), zin.scale(i32, 150, dpi_scale.y)), // top left
+                    .xy(x + zin.scale(i32, 200, dpi_scale.x), y + zin.scale(i32, 127, dpi_scale.y)), // top
+                    .xy(x + zin.scale(i32, 232, dpi_scale.x), y + zin.scale(i32, 150, dpi_scale.y)), // top right
+                    .xy(x + zin.scale(i32, 220, dpi_scale.x), y + zin.scale(i32, 187, dpi_scale.y)), // bottom right
+                    .xy(x + zin.scale(i32, 180, dpi_scale.x), y + zin.scale(i32, 187, dpi_scale.y)), // bottom left
+                    .xy(x + zin.scale(i32, 168, dpi_scale.x), y + zin.scale(i32, 150, dpi_scale.y)), // top left
                 };
                 d.polygon(&pentagon, .blue);
             }
@@ -197,6 +207,11 @@ fn callback(cb: zin.Callback(.main)) void {
                     if (global.mouse_down.middle) "1" else "0",
                 }) catch unreachable;
                 d.text(.mouse_buttons, str, margin_left, top + zin.scale(i32, 20, dpi_scale.y), .white);
+            }
+            {
+                var str_buf: [100]u8 = undefined;
+                const str = std.fmt.bufPrint(&str_buf, "Scroll x:{d:.1} y:{d:.1}", .{ global.scroll.x, global.scroll.y }) catch unreachable;
+                d.text(.scroll, str, margin_left, top + zin.scale(i32, 40, dpi_scale.y), .white);
             }
             d.text(.weeee, "Weeee!!!", animate.x, animate.y, .white);
             if (global.mouse_position) |p| {
@@ -223,6 +238,13 @@ fn callback(cb: zin.Callback(.main)) void {
             }
         },
         .mouse => |mouse| {
+            switch (mouse.kind) {
+                .move, .button => {},
+                .scroll => |scroll| {
+                    global.scroll.x += scroll.x;
+                    global.scroll.y += scroll.y;
+                },
+            }
             global.mouse_position = mouse.position;
             global.mouse_down = mouse.down;
             zin.staticWindow(.main).invalidate();
