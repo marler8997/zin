@@ -60,6 +60,11 @@ pub const Connection = struct {
     // TODO: we'll need some better mechanism for ids so we can't run out
     next_id_offset: u32 = 0,
     present_opcode_base: u8,
+    /// The window manager's protocol for asking a window to close: windows
+    /// list WM_DELETE_WINDOW in their WM_PROTOCOLS, and get a ClientMessage
+    /// with it instead of being killed.
+    wm_protocols: x11.Atom,
+    wm_delete_window: x11.Atom,
 
     dpi_get_property_sequence: ?u16 = null,
 
@@ -171,7 +176,7 @@ pub const ConnectError = union(enum) {
     bad_display,
     recv_error: (error{EndOfStream} || std.Io.net.Stream.Reader.Error),
     send_error: std.Io.net.Stream.Writer.Error,
-    protocol_error: enum { setup, setup_dynamic, depth, id_range, id_range_capacity, present_not_available, read_dpi, discard_dpi, keycode_range, unexpected_msg },
+    protocol_error: enum { setup, setup_dynamic, depth, id_range, id_range_capacity, present_not_available, intern_atom, read_dpi, discard_dpi, keycode_range, unexpected_msg },
     cant_authenticate,
     no_screen,
 
@@ -299,6 +304,9 @@ pub fn connect(thread: zin.ThreadId, io: std.Io, environ: std.process.Environ, o
         return out_err.set(.{ .protocol_error = .present_not_available });
     };
 
+    const wm_protocols = try synchronousInternAtom(&source, &sink, "WM_PROTOCOLS", out_err);
+    const wm_delete_window = try synchronousInternAtom(&source, &sink, "WM_DELETE_WINDOW", out_err);
+
     const dpi_scale: DpiScale = blk: {
         if (!support_dpi_events) break :blk .{ .val = {} };
         const seq = sendDpiGetProperty(&sink) catch return out_err.set(
@@ -342,6 +350,8 @@ pub fn connect(thread: zin.ThreadId, io: std.Io, environ: std.process.Environ, o
         .dpi_scale = dpi_scale,
         .keymap = keymap,
         .present_opcode_base = present_ext.opcode_base,
+        .wm_protocols = wm_protocols,
+        .wm_delete_window = wm_delete_window,
         .write_error = null,
     };
 
@@ -384,6 +394,24 @@ fn parseXftDpi(data: []const u8) ?f32 {
         }
     }
     return null;
+}
+
+fn synchronousInternAtom(
+    source: *x11.Source,
+    sink: *x11.RequestSink,
+    comptime name: []const u8,
+    out_err: *ConnectError,
+) error{X11Connect}!x11.Atom {
+    sink.InternAtom(.{ .only_if_exists = false, .name = .initComptime(name) }) catch
+        return out_err.set(.{ .send_error = global.i.socket_writer.err orelse error.Unexpected });
+    sink.writer.flush() catch
+        return out_err.set(.{ .send_error = global.i.socket_writer.err orelse error.Unexpected });
+    const reply, _ = source.readSynchronousReplyFull(sink.sequence, .InternAtom) catch |err| return switch (err) {
+        error.Protocol => out_err.set(.{ .protocol_error = .intern_atom }),
+        error.UnexpectedMessage => out_err.set(.{ .protocol_error = .unexpected_msg }),
+        error.ReadFailed, error.EndOfStream => |e| out_err.setRecv(e),
+    };
+    return reply.atom;
 }
 
 /// Reads a GetProperty reply for RESOURCE_MANAGER and parses Xft.dpi from it.
@@ -801,6 +829,14 @@ fn createWindow(
         .colormap = opt.colormap,
         .cursor = opt.cursor,
     }) catch |e| return global.conn.?.teeWriteError(e);
+    global.conn.?.sink.ChangeProperty(
+        .replace,
+        id,
+        global.conn.?.wm_protocols,
+        .ATOM,
+        u32,
+        .init(&[_]u32{@backingInt(global.conn.?.wm_delete_window)}, 1),
+    ) catch |e| return global.conn.?.teeWriteError(e);
     global.conn.?.sink.CreateGc(
         gcFromWindow(id),
         id.drawable(),
@@ -1382,6 +1418,24 @@ pub fn x11HandleMessage(source: *x11.Source, msg_kind: x11.ServerMsgKind) !void 
                     .created => @panic("todo: notify app that a window was destroyed"),
                 }
             } else @panic("X11 event for a window zin did not create");
+        },
+        .ClientMessage => {
+            const msg = try source.read2(.ClientMessage);
+            // any client can send one, to any window
+            const window_id = global.conn.?.staticWindowFromX11Id(msg.window) orelse {
+                log.debug("ignoring X11 ClientMessage for window {} zin did not create", .{@backingInt(msg.window)});
+                return;
+            };
+            const protocol = std.mem.readInt(u32, msg.data[0..4], builtin.cpu.arch.endian());
+            if (msg.format == 32 and msg.type == global.conn.?.wm_protocols and protocol == @backingInt(global.conn.?.wm_delete_window)) {
+                switch (window_id) {
+                    inline else => |w| switch (global.static_window_common_states[@backingInt(w)]) {
+                        // a second close request, queued before the first destroyed it
+                        .not_created => log.debug("ignoring WM_DELETE_WINDOW for destroyed window {t}", .{w}),
+                        .created => staticCallback(w)(.close),
+                    },
+                }
+            } else log.debug("ignoring X11 ClientMessage type={} format={}", .{ @backingInt(msg.type), msg.format });
         },
         .ConfigureNotify => {
             const msg = try source.read2(.ConfigureNotify);
