@@ -163,6 +163,9 @@ const Window = enum(usize) {
     pub fn show(self: Window) void {
         _ = win32.ShowWindow(self.asHwnd(), .SHOWNORMAL);
     }
+    pub fn hide(self: Window) void {
+        _ = win32.ShowWindow(self.asHwnd(), .HIDE);
+    }
     pub fn foreground(self: Window) void {
         if (0 == win32.SetForegroundWindow(self.asHwnd()))
             win32.panicWin32("SetForegroundWindow", win32.GetLastError());
@@ -197,6 +200,8 @@ const global = struct {
     var process_init_check: zin.ProcessInitCheck = .{};
     var static_classes: [static_window_count]?WindowClass = @splat(null);
     var static_windows: [static_window_count]?Window = @splat(null);
+    /// the app can't create a window it destroyed again
+    var static_windows_destroyed: [static_window_count]bool = @splat(false);
     var thread_init_checks: [thread_count]zin.ThreadInitCheck = @splat(.{});
     /// The Direct2D factory of each thread that has a direct2d window, set
     /// between that thread's threadInit and threadDeinit.
@@ -388,6 +393,8 @@ pub fn staticWindow(comptime window_id: zin.StaticWindowId) type {
             global.static_classes[@backingInt(window_id)].?.unregister();
         }
         pub fn create(opt: zin.CreateWindowOptions) zin.CreateWindowError!void {
+            if (global.static_windows_destroyed[@backingInt(window_id)])
+                @panic("create called on a window the app destroyed, hide windows to show them again");
             std.debug.assert(global.static_windows[@backingInt(window_id)] == null);
             const hwnd = try createWindow(
                 global.static_classes[@backingInt(window_id)] orelse zin.debugPanicOrUnreachable(
@@ -402,10 +409,15 @@ pub fn staticWindow(comptime window_id: zin.StaticWindowId) type {
             global.static_windows[@backingInt(window_id)].?.destroy();
         }
         pub fn getClientSize() zin.XY(i32) {
-            return global.static_windows[@backingInt(window_id)].?.getClientSize();
+            const window = global.static_windows[@backingInt(window_id)] orelse
+                @panic("getClientSize called before the window's .created callback or after it was destroyed");
+            return window.getClientSize();
         }
         pub fn show() void {
             global.static_windows[@backingInt(window_id)].?.show();
+        }
+        pub fn hide() void {
+            global.static_windows[@backingInt(window_id)].?.hide();
         }
         pub fn foreground() void {
             global.static_windows[@backingInt(window_id)].?.foreground();
@@ -801,6 +813,8 @@ pub fn makeWndProc(
                 win32.WM_CREATE => {
                     std.debug.assert(null == global.static_windows[@backingInt(window_id)]);
                     global.static_windows[@backingInt(window_id)] = windowFromHwnd(hwnd);
+                    // before any WM_SIZE
+                    if (comptime window_id.getConfig().window_size_events) class.callback(.created);
                     return 0;
                 },
                 win32.WM_DESTROY => {
@@ -813,6 +827,8 @@ pub fn makeWndProc(
                     }
                     std.debug.assert(windowFromHwnd(hwnd) == global.static_windows[@backingInt(window_id)]);
                     global.static_windows[@backingInt(window_id)] = null;
+                    global.static_windows_destroyed[@backingInt(window_id)] = true;
+                    if (comptime window_id.getConfig().destroyed_events) class.callback(.{ .destroyed = .app });
                     return 0;
                 },
                 win32.WM_DISPLAYCHANGE => {

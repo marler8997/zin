@@ -119,6 +119,7 @@ const global = struct {
     var thread_init_checks: [@typeInfo(zin.ThreadId).@"enum".field_names.len]zin.ThreadInitCheck = @splat(.{});
     var static_classes: [static_window_count]?AnyZinView = @splat(null);
     var static_windows: [static_window_count]?NSWindow = @splat(null);
+    var static_callbacks: [static_window_count]?*const anyopaque = @splat(null);
 };
 
 pub fn staticWindow(window_id: zin.StaticWindowId) type {
@@ -135,6 +136,7 @@ pub fn staticWindow(window_id: zin.StaticWindowId) type {
             std.debug.assert(global.static_classes[@backingInt(window_id)] == null);
             const view = ZinView(window_id, def).create();
             global.static_classes[@backingInt(window_id)] = view.any();
+            global.static_callbacks[@backingInt(window_id)] = @ptrCast(def.callback);
         }
         pub fn unregisterClass() void {}
         pub fn create(opt: zin.CreateWindowOptions) zin.CreateWindowError!void {
@@ -150,14 +152,24 @@ pub fn staticWindow(window_id: zin.StaticWindowId) type {
                     .{@tagName(window_id)},
                 ),
             );
+            if (comptime window_id.getConfig().window_size_events) {
+                const callback: *const fn (zin.Callback(window_id)) void = @ptrCast(@alignCast(global.static_callbacks[@backingInt(window_id)].?));
+                callback(.created);
+            }
         }
         pub fn destroy() void {}
         pub fn getClientSize() zin.XY(i32) {
-            const view = global.static_windows[@backingInt(window_id)].?.contentView();
+            const window = global.static_windows[@backingInt(window_id)] orelse
+                @panic("getClientSize called before the window's .created callback");
+            const view = window.contentView();
             return (AnyZinView{ .obj = view }).getClientSize();
         }
         pub fn show() void {
-            //@panic("todo");
+            // createWindow already shows it, this is for a window hidden since
+            global.static_windows[@backingInt(window_id)].?.orderFront();
+        }
+        pub fn hide() void {
+            global.static_windows[@backingInt(window_id)].?.orderOut();
         }
         pub fn foreground() void {
             global.static_windows[@backingInt(window_id)].?.makeKeyAndOrderFront();
@@ -1152,6 +1164,12 @@ const NSWindow = struct {
     }
     pub fn makeKeyAndOrderFront(self: NSWindow) void {
         self.obj.msgSend(void, "makeKeyAndOrderFront:", .{@as(objc.c.id, null)});
+    }
+    pub fn orderFront(self: NSWindow) void {
+        self.obj.msgSend(void, "orderFront:", .{@as(objc.c.id, null)});
+    }
+    pub fn orderOut(self: NSWindow) void {
+        self.obj.msgSend(void, "orderOut:", .{@as(objc.c.id, null)});
     }
     pub fn contentView(self: NSWindow) objc.Object {
         const obj = self.obj.msgSend(objc.Object, "contentView", .{});

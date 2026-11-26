@@ -381,6 +381,8 @@ fn makeTaggedUnion(fields: []const Field) type {
 pub const WindowConfigData = struct {
     /// The thread that creates the window and services its events.
     thread: ThreadId,
+    /// The window gets `.created` once it exists, and `.window_size` when its
+    /// size changes. getClientSize can only be called after `.created`.
     window_size_events: bool,
     key_events: bool,
     mouse_events: bool,
@@ -390,6 +392,8 @@ pub const WindowConfigData = struct {
         type: type,
     },
     dpi_events: bool,
+    /// The window gets `.destroyed` whenever it's destroyed, see DestroyedReason.
+    destroyed_events: bool,
     /// An enum with a value for each text the window draws with `Draw.text`,
     /// which keeps what it can of that text between draws.
     TextId: type,
@@ -440,12 +444,22 @@ pub fn timerIdFromInt(comptime TimerId: type, int: anytype) TimerId {
     };
 }
 
+pub const DestroyedReason = enum {
+    /// The app called destroy. The app can't create the window again,
+    /// windows are hidden to show them again later.
+    app,
+    /// Something other than the app destroyed it, e.g. another X11 client.
+    /// The app can create the window again.
+    external,
+};
+
 pub fn Callback(window_id: StaticWindowId) type {
     return makeTaggedUnion(
         &([_]Field{
             .{ .name = "close", .type = void },
             .{ .name = "draw", .type = Draw(window_id) },
         } ++ (if (window_id.getConfig().window_size_events) [_]Field{
+            .{ .name = "created", .type = void },
             .{ .name = "window_size", .type = XY(i32) },
         } else [_]Field{}) ++ (if (window_id.getConfig().key_events) [_]Field{
             .{ .name = "key", .type = Key },
@@ -457,6 +471,8 @@ pub fn Callback(window_id: StaticWindowId) type {
             .type => |t| [_]Field{.{ .name = "timer", .type = t }},
         }) ++ (if (window_id.getConfig().dpi_events) [_]Field{
             .{ .name = "dpi_change", .type = void },
+        } else [_]Field{}) ++ (if (window_id.getConfig().destroyed_events) [_]Field{
+            .{ .name = "destroyed", .type = DestroyedReason },
         } else [_]Field{}) ++ (if (window_id.getConfig().win32.set_cursor_callback) [_]Field{
             .{ .name = "win32_set_cursor", .type = struct { result_ref: *isize, wparam: usize, lparam: isize } },
         } else [_]Field{})),

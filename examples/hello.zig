@@ -24,6 +24,7 @@ const StaticWindowId = enum {
                 .key_events = true,
                 .mouse_events = true,
                 .dpi_events = true,
+                .destroyed_events = false,
                 .TextId = enum { press_n, mouse_buttons, scroll, weeee, mouse },
                 .timers = .one,
                 .background = .{ .r = 49, .g = 49, .b = 49 },
@@ -37,6 +38,7 @@ const StaticWindowId = enum {
                 .key_events = false,
                 .mouse_events = false,
                 .dpi_events = false,
+                .destroyed_events = false,
                 .TextId = enum { title },
                 .timers = .none,
                 .background = .{ .r = 49, .g = 49, .b = 49 },
@@ -50,6 +52,7 @@ const StaticWindowId = enum {
                 .key_events = false,
                 .mouse_events = false,
                 .dpi_events = false,
+                .destroyed_events = true,
                 .TextId = enum { title },
                 .timers = .none,
                 .background = .{ .r = 255, .g = 0, .b = 0 },
@@ -75,7 +78,7 @@ const global = struct {
     /// How far the mouse wheel has turned in all.
     var scroll: zin.XY(f32) = .{ .x = 0, .y = 0 };
     var test_win32_created: bool = false;
-    var extra_created: bool = false;
+    var extra: enum { can_be_created, created, destroyed } = .can_be_created;
 };
 
 const test_win32_class: zin.WindowClassDefinition(.testWin32) = .{
@@ -147,7 +150,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     global.test_win32_created = true;
     defer if (global.test_win32_created) zin.staticWindow(.testWin32).destroy();
     zin.staticWindow(.testWin32).show();
-    defer if (global.extra_created) zin.staticWindow(.extra).destroy();
+    defer if (global.extra == .created) zin.staticWindow(.extra).destroy();
 
     try zin.mainLoop();
 }
@@ -155,7 +158,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
 fn callback(cb: zin.Callback(.main)) void {
     switch (cb) {
         .close => zin.quitMainLoop(),
-        .window_size => {},
+        .created, .window_size => {},
         .draw => |d| {
             {
                 const now: std.Io.Timestamp = .now(std.Io.Threaded.global_single_threaded.io(), .awake);
@@ -223,17 +226,21 @@ fn callback(cb: zin.Callback(.main)) void {
             var keyboard_state: zin.UnicodeKeyboardState = .init();
             const utf8 = key.utf8(keyboard_state.ref());
             if (null != std.mem.findScalar(u8, utf8.slice(), 'n')) {
-                if (!global.extra_created) {
-                    zin.staticWindow(.extra).create(.{
-                        .title = "Extra Window!",
-                        .size = .{ .window_points = .{ .x = 200, .y = 150 } },
-                        .pos = null,
-                    }) catch |e| std.debug.panic("createWindow failed with {s}", .{@errorName(e)});
-                    global.extra_created = true;
-                    // TODO: place the new window on top of the current
-                    //       one but don't have it take the input focus
-                    zin.staticWindow(.extra).show();
+                switch (global.extra) {
+                    .can_be_created => {
+                        zin.staticWindow(.extra).create(.{
+                            .title = "Extra Window!",
+                            .size = .{ .window_points = .{ .x = 200, .y = 150 } },
+                            .pos = null,
+                        }) catch |e| std.debug.panic("createWindow failed with {s}", .{@errorName(e)});
+                        global.extra = .created;
+                    },
+                    .created => {},
+                    .destroyed => unreachable,
                 }
+                // TODO: place the new window on top of the current
+                //       one but don't have it take the input focus
+                zin.staticWindow(.extra).show();
                 zin.staticWindow(.main).foreground();
             }
         },
@@ -277,7 +284,7 @@ fn testWin32Callback(cb: zin.Callback(.testWin32)) void {
             zin.staticWindow(.testWin32).destroy();
             global.test_win32_created = false;
         },
-        .window_size => {},
+        .created, .window_size => {},
         .draw => |d| {
             d.clear();
             d.text(.title, "Test Win32 Window", 10, 10, .red);
@@ -287,11 +294,12 @@ fn testWin32Callback(cb: zin.Callback(.testWin32)) void {
 
 fn extraCallback(cb: zin.Callback(.extra)) void {
     switch (cb) {
-        .close => {
-            zin.staticWindow(.extra).destroy();
-            global.extra_created = false;
+        .close => zin.staticWindow(.extra).hide(),
+        .destroyed => |reason| global.extra = switch (reason) {
+            .app => .destroyed,
+            .external => .can_be_created,
         },
-        .window_size => {},
+        .created, .window_size => {},
         .draw => |d| {
             //d.clear(.full_red);
             d.clear();

@@ -66,7 +66,60 @@ pub fn build(b: *std.Build) void {
 
     const examples = b.step("examples", "Build/install all examples");
     addExample(b, target, optimize, zin_mod, x11, examples, "hello");
+
+    const test_step = b.step("test", "Run all tests");
+    if (x11) {
+        const test_x11 = b.step("test-x11", "Run the X11 tests against a fake X server");
+        const exe = b.addExecutable(.{
+            .name = "test-x11",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("test/x11.zig"),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{.{ .name = "zin", .module = zin_mod }},
+            }),
+        });
+        test_x11.dependOn(&b.addRunArtifact(exe).step);
+        // each app bug zin panics on runs in its own process
+        for (x11_panic_cases) |case| {
+            const run = b.addRunArtifact(exe);
+            run.addArg(case[0]);
+            run.addCheck(.{ .expect_stderr_match = case[1] });
+            run.addCheck(.{ .expect_term = .{ .signal = .ABRT } });
+            test_x11.dependOn(&run.step);
+        }
+        test_step.dependOn(test_x11);
+    }
 }
+
+/// App bugs zin's X11 platform must panic on: the test-x11 argument that runs
+/// the case, and the panic message.
+const x11_panic_cases: []const [2][]const u8 = &.{
+    .{ "panic-show-not-created", "show called on a window that's not created" },
+    .{ "panic-invalidate-not-created", "invalidate called on a window that's not created" },
+    .{ "panic-get-client-size-not-created", "getClientSize called on a window that's not created" },
+    .{ "panic-start-timer-not-created", "startTimer called on a window that's not created" },
+    .{ "panic-create-twice", "create called on a window that's already created" },
+    .{ "panic-create-unregistered", "create called before registerClass" },
+    .{ "panic-unregister-while-created", "unregisterClass called while its window exists" },
+    .{ "panic-disconnect-while-created", "disconnect called while window a exists" },
+    .{ "panic-use-after-failure", "the X11 connection failed, the app must disconnect" },
+    .{ "panic-show-after-destroyed", "show called on a window that's not created" },
+    .{ "panic-hide-not-created", "hide called on a window that's not created" },
+    .{ "panic-create-after-destroy", "create called on a window the app destroyed, hide windows to show them again" },
+    .{ "panic-show-after-app-destroy", "show called on a window that was destroyed" },
+    .{ "panic-error-after-recreate", "Unhandled X11 Error" },
+    .{ "panic-error-after-recreate-wrap", "Unhandled X11 Error" },
+    .{ "panic-error-after-race-cleared", "Unhandled X11 Error" },
+    .{ "panic-error-not-naming-resource", "Unhandled X11 Error" },
+    .{ "panic-draw-after-destroy", "drawing on a window the app destroyed" },
+    .{ "panic-create-after-failure", "the X11 connection failed, the app must disconnect" },
+    .{ "panic-raw-access-after-failure", "the X11 connection failed, the app must disconnect" },
+    .{ "panic-main-loop-after-setup-failed", "the X11 connection failed, the app must disconnect" },
+    .{ "panic-show-after-failure", "the X11 connection failed, the app must disconnect" },
+    .{ "panic-get-client-size-before-created", "getClientSize called before the window's .created callback" },
+    .{ "panic-error-after-app-destroy-race", "Unhandled X11 Error" },
+};
 
 fn addExample(
     b: *std.Build,
