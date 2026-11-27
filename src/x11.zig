@@ -551,20 +551,103 @@ pub fn disconnect(thread: zin.ThreadId) void {
 }
 
 const xft_dpi_prefix = "Xft.dpi:";
-fn parseXftDpi(data: []const u8) ?f32 {
-    var it = std.mem.splitScalar(u8, data, '\n');
-    while (it.next()) |line| {
-        const trimmed = std.mem.trimStart(u8, line, " \t");
-        if (std.mem.startsWith(u8, trimmed, xft_dpi_prefix)) {
-            const value_str = std.mem.trimStart(u8, trimmed[xft_dpi_prefix.len..], " \t");
-            return std.fmt.parseFloat(f32, value_str) catch null;
+
+/// The longest Xft.dpi line accepted, after the whitespace that's skipped,
+/// a power of 2 minus 1 so XftDpiIndex uses all its bits.
+const max_xft_dpi_line_len = 63;
+/// Outside these zin's window sizes overflow or round to 0, real ones are
+/// 72 to 288.
+const min_xft_dpi = 24;
+const max_xft_dpi = 960;
+const XftDpiIndex = std.math.IntFittingRange(0, max_xft_dpi_line_len);
+
+const XftDpiResult = union(enum) {
+    ok: f32,
+    err: XftDpiError,
+};
+const XftDpiError = union(enum) {
+    not_found,
+    /// the line didn't fit in the line buffer, this is its start
+    too_long: XftDpiText,
+    not_a_number: XftDpiText,
+    out_of_range: XftDpiText,
+
+    /// `line_buf` is the one readXftDpi got
+    fn fmt(err: XftDpiError, line_buf: []const u8) Fmt {
+        return .{ .err = err, .line_buf = line_buf };
+    }
+    const Fmt = struct {
+        err: XftDpiError,
+        line_buf: []const u8,
+        pub fn format(f: Fmt, writer: *std.Io.Writer) error{WriteFailed}!void {
+            switch (f.err) {
+                .not_found => try writer.writeAll("not found"),
+                .too_long => |text| try writer.print(
+                    "its line is longer than {} bytes: '{f}...'",
+                    .{ max_xft_dpi_line_len, std.zig.fmtString(f.line_buf[text.start..text.limit]) },
+                ),
+                .not_a_number => |text| try writer.print("'{f}' isn't a number", .{std.zig.fmtString(f.line_buf[text.start..text.limit])}),
+                .out_of_range => |text| try writer.print(
+                    "'{f}' isn't between {} and {}",
+                    .{ std.zig.fmtString(f.line_buf[text.start..text.limit]), min_xft_dpi, max_xft_dpi },
+                ),
+            }
+        }
+    };
+};
+const XftDpiText = struct { start: XftDpiIndex, limit: XftDpiIndex };
+
+/// Reads a resource database value of `len` bytes up to its Xft.dpi line,
+/// keeping only the current line, so the value can be bigger than the read
+/// buffer. The caller discards the rest of the reply.
+fn readXftDpi(
+    source: *x11.Source,
+    len: u35,
+    line_buf: *[max_xft_dpi_line_len]u8,
+) error{ ReadFailed, EndOfStream }!XftDpiResult {
+    var line_len: XftDpiIndex = 0;
+    var line_overflow = false;
+    var remaining = len;
+    while (remaining > 0) {
+        const chunk = try source.takeReply(@min(remaining, source.reader.buffer.len));
+        remaining -= @intCast(chunk.len);
+        for (chunk) |c| {
+            if (c == '\n') {
+                if (parseXftDpiLine(line_buf[0..line_len], line_overflow)) |result| return result;
+                line_len = 0;
+                line_overflow = false;
+            } else if ((c == ' ' or c == '\t') and (line_len == 0 or line_len == xft_dpi_prefix.len)) {
+                // whitespace before the name or the value, not stored so it
+                // doesn't count against the line buffer
+            } else if (line_len < line_buf.len) {
+                line_buf[line_len] = c;
+                line_len += 1;
+            } else {
+                line_overflow = true;
+            }
         }
     }
-    return null;
+    // the last line may not end with a newline
+    if (line_len > 0) if (parseXftDpiLine(line_buf[0..line_len], line_overflow)) |result| return result;
+    return .{ .err = .not_found };
 }
 
-/// Reads a GetProperty reply for RESOURCE_MANAGER and parses Xft.dpi from it.
-/// Returns the DPI scale factor, or null if Xft.dpi was not found/parseable.
+/// null if it isn't the Xft.dpi line, `overflow` means it didn't fit in `line`
+fn parseXftDpiLine(line: []const u8, overflow: bool) ?XftDpiResult {
+    if (!std.mem.startsWith(u8, line, xft_dpi_prefix)) return null;
+    if (overflow) return .{ .err = .{ .too_long = .{ .start = 0, .limit = @intCast(line.len) } } };
+    const value_str = std.mem.trimEnd(u8, line[xft_dpi_prefix.len..], " \t\r\x00");
+    const value: XftDpiText = .{ .start = xft_dpi_prefix.len, .limit = @intCast(xft_dpi_prefix.len + value_str.len) };
+    const dpi = std.fmt.parseFloat(f32, value_str) catch |err| switch (err) {
+        error.InvalidCharacter => return .{ .err = .{ .not_a_number = value } },
+    };
+    if (!(dpi >= min_xft_dpi and dpi <= max_xft_dpi)) return .{ .err = .{ .out_of_range = value } };
+    return .{ .ok = dpi };
+}
+
+/// Reads the whole GetProperty reply for RESOURCE_MANAGER and parses Xft.dpi
+/// from it. Returns the DPI scale factor, or null if Xft.dpi was not
+/// found/parseable.
 fn readDpiFromPropertyReply(source: *x11.Source, value_format: u8) error{ ReadFailed, EndOfStream, Protocol }!?f32 {
     const prop_header = try source.read3Header(.GetProperty);
     const result: ?f32 = blk: {
@@ -576,15 +659,24 @@ fn readDpiFromPropertyReply(source: *x11.Source, value_format: u8) error{ ReadFa
             log.err("Xft.dpi value size is 0", .{});
             break :blk null;
         }
-        const value_len: u35 = prop_header.value_size_in_format_units;
-        const data = try source.takeReply(value_len);
-        if (parseXftDpi(data)) |xft_dpi| {
-            const scale = xft_dpi / 96.0;
-            log.debug("Xft.dpi={d:.2} scale={d:.2}", .{ xft_dpi, scale });
-            break :blk scale;
+        if (prop_header.value_size_in_format_units > source.replyRemainingSize()) {
+            log.err(
+                "RESOURCE_MANAGER value is {} bytes but the reply only has {}",
+                .{ prop_header.value_size_in_format_units, source.replyRemainingSize() },
+            );
+            return error.Protocol;
         }
-        log.err("failed to find '{s}' in Xft response", .{xft_dpi_prefix});
-        break :blk null;
+        var line_buf: [max_xft_dpi_line_len]u8 = undefined;
+        const xft_dpi = switch (try readXftDpi(source, prop_header.value_size_in_format_units, &line_buf)) {
+            .ok => |dpi| dpi,
+            .err => |err| {
+                log.err("can't use Xft.dpi from RESOURCE_MANAGER: {f}", .{err.fmt(&line_buf)});
+                break :blk null;
+            },
+        };
+        const scale = xft_dpi / 96.0;
+        log.debug("Xft.dpi={d:.2} scale={d:.2}", .{ xft_dpi, scale });
+        break :blk scale;
     };
     try source.discardRemaining();
     return result;

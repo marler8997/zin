@@ -474,8 +474,15 @@ const FakeServer = struct {
             Opcode.GetProperty,
         });
     }
-    /// Replies to the setup requests, `dpi` is Xft.dpi.
-    fn replySetup(server: *FakeServer, requests: *const [6]Request, opt: struct { dpi: u32 = 96, present: bool = true }) void {
+    /// Replies to the setup requests, with RESOURCE_MANAGER `resources` if
+    /// set, else just Xft.dpi `dpi`.
+    fn replySetup(server: *FakeServer, requests: *const [6]Request, opt: struct {
+        dpi: u32 = 96,
+        present: bool = true,
+        resources: ?[]const u8 = null,
+        /// the reply says its value is this much longer than it is
+        resources_overstated: u32 = 0,
+    }) void {
         var body: [24]u8 = @splat(0);
         body[0] = @intFromBool(opt.present);
         body[1] = present_opcode;
@@ -488,16 +495,29 @@ const FakeServer = struct {
         var keysyms: [max_keycode - min_keycode + 1]u32 = @splat(0);
         keysyms[keycode_a - min_keycode] = 'a';
         server.reply(requests[3].sequence, 1, @splat(0), std.mem.sliceAsBytes(&keysyms));
-        server.replyDpi(requests[5].sequence, opt.dpi);
+        if (opt.resources) |resources| {
+            server.replyResources(requests[5].sequence, resources, opt.resources_overstated);
+        } else server.replyDpi(requests[5].sequence, opt.dpi);
+    }
+    /// Replies to a GetProperty RESOURCE_MANAGER with this database.
+    fn replyResources(server: *FakeServer, sequence: u16, value: []const u8, overstated: u32) void {
+        var header: [32]u8 = @splat(0);
+        header[0] = 1; // Reply
+        header[1] = 8; // format
+        std.mem.writeInt(u16, header[2..4], sequence, .little);
+        std.mem.writeInt(u32, header[4..8], @intCast(pad4(value.len) / 4), .little);
+        std.mem.writeInt(u32, header[8..12], 31, .little); // STRING
+        std.mem.writeInt(u32, header[16..20], @as(u32, @intCast(value.len)) + overstated, .little);
+        server.write(&header);
+        server.write(value);
+        const padding = [_]u8{ 0, 0, 0 };
+        server.write(padding[0 .. pad4(value.len) - value.len]);
+        server.flush();
     }
     /// Replies to a GetProperty RESOURCE_MANAGER with Xft.dpi.
     fn replyDpi(server: *FakeServer, sequence: u16, dpi: u32) void {
-        var value_buf: [32]u8 = @splat(0);
-        const value = std.fmt.bufPrint(&value_buf, "Xft.dpi:\t{d}\n", .{dpi}) catch unreachable;
-        var body: [24]u8 = @splat(0);
-        std.mem.writeInt(u32, body[0..4], 31, .little); // STRING
-        std.mem.writeInt(u32, body[8..12], @intCast(value.len), .little);
-        server.reply(sequence, 8, body, value_buf[0..pad4(value.len)]);
+        var value_buf: [32]u8 = undefined;
+        server.replyResources(sequence, std.fmt.bufPrint(&value_buf, "Xft.dpi:\t{d}\n", .{dpi}) catch unreachable, 0);
     }
 };
 const Field = struct {
@@ -874,6 +894,96 @@ fn testRecreateAfterExternalDestroy() void {
     callback_log.expect(&.{.{ .key = .a }});
     zin.staticWindow(.a).destroy();
     disconnect(&server);
+}
+
+fn repeat(comptime c: u8, comptime n: usize) *const [n]u8 {
+    return comptime &@as([n]u8, @splat(c));
+}
+
+/// Connects with this resource database and returns the width zin creates
+/// a 300 point wide window at, 300 at 96 DPI.
+fn widthWithResources(resources: []const u8) u16 {
+    var server: FakeServer = undefined;
+    connect(&server);
+    const setup_requests = server.expectSetupRequests();
+    server.replySetup(&setup_requests, .{ .resources = resources });
+    clientHandle(5);
+    std.debug.assert(conn().isSetupDone());
+    // zin read all of the reply
+    server.keyPress(setup_requests[5].sequence, root_window);
+    clientHandle(1);
+    const width = createAndExpect(&server, .a).int(u16, 16);
+    zin.staticWindow(.a).destroy();
+    disconnect(&server);
+    return width;
+}
+
+/// zin finds Xft.dpi in the resource database however big it is, and says
+/// what's wrong with a bad value instead of using it.
+fn testResourceDatabase() void {
+    // bigger than zin's read buffer, with the Xft.dpi line across its end
+    {
+        const buffer_size = zin.config.x11_read_buffer_size;
+        var buf: [buffer_size * 3]u8 = undefined;
+        var w: std.Io.Writer = .fixed(&buf);
+        while (w.end + "Xcursor.theme:\tAdwaita\n".len <= buffer_size - 10) w.writeAll("Xcursor.theme:\tAdwaita\n") catch unreachable;
+        w.splatByteAll('z', buffer_size - 5 - w.end - ": 1\n".len) catch unreachable;
+        w.writeAll(": 1\n") catch unreachable;
+        std.debug.assert(w.end == buffer_size - 5);
+        w.writeAll("Xft.dpi:\t144\n") catch unreachable;
+        while (w.end + "Xcursor.size:\t24\n".len <= buf.len) w.writeAll("Xcursor.size:\t24\n") catch unreachable;
+        expectEq(u16, widthWithResources(w.buffered()), 450);
+        // and without one
+        w.end = 0;
+        while (w.end + "Xcursor.size:\t24\n".len <= buf.len) w.writeAll("Xcursor.size:\t24\n") catch unreachable;
+        expectEq(u16, widthWithResources(w.buffered()), 300);
+    }
+    // a reply that says its value is longer than it is
+    {
+        var server: FakeServer = undefined;
+        connect(&server);
+        const setup_requests = server.expectSetupRequests();
+        server.replySetup(&setup_requests, .{ .resources = "Xft.dpi:\t144\n", .resources_overstated = 40 });
+        clientHandle(4);
+        const kind = conn().source.readKind() catch |err| std.debug.panic("readKind failed with {t}", .{err});
+        expectError(error.Protocol, zin.platform.x11HandleMessage(&conn().source, kind));
+        zin.x11Disconnect(.main);
+        server.close();
+    }
+    const cases = [_]struct { []const u8, u16 }{
+        .{ "Xft.dpi:\t144", 450 }, // no newline at the end
+        .{ "Xft.dpi:\t144\nXft.dpi:\t96\n", 450 }, // the first wins
+        .{ "Xft.dpi:\t144  \r\n", 450 },
+        .{ "Xft.dpi:\t144\t\n", 450 },
+        .{ "Xft.dpi:\t24\n", 75 },
+        .{ "Xft.dpi:\t960\n", 3000 },
+        .{ "Xft.dpi:\t144\x00", 450 },
+        .{ repeat(' ', 40) ++ "\t" ++ repeat(' ', 40) ++ "Xft.dpi:" ++ repeat(' ', 80) ++ "144\n", 450 },
+        .{ "Xcursor.theme:" ++ repeat('x', 100) ++ "\nXft.dpi:\t144\n", 450 },
+        // the longest line zin accepts is 63 bytes
+        .{ "Xft.dpi:" ++ repeat('0', 63 - "Xft.dpi:144".len) ++ "144\n", 450 },
+        // not found, or not a positive number: 96
+        .{ "Xcursor.size:\t24\n", 300 },
+        .{ "Xft.dpi:\tabc\n", 300 },
+        .{ "Xft.dpi:" ++ repeat('0', 64 - "Xft.dpi:144".len) ++ "144\n", 300 },
+        // the first 63 bytes would parse
+        .{ "Xft.dpi:\t144" ++ repeat(' ', 100) ++ "7\n", 300 },
+        .{ "Xft.dpi:\tabc\nXft.dpi:\t144\n", 300 }, // the first wins even if it's bad
+        .{ "foo: " ++ repeat('x', 70) ++ "Xft.dpi:\t200\n", 300 }, // the rest of a long line isn't a line
+        .{ "Xft.dpi:\t23.9\n", 300 },
+        .{ "Xft.dpi:\t960.1\n", 300 },
+        .{ "Xft.dpi:\t0.001\n", 300 },
+        .{ "Xft.dpi:\t30000\n", 300 },
+        .{ "Xft.dpi:\t3e9\n", 300 },
+        .{ "Xft.dpi:\t0\n", 300 },
+        .{ "Xft.dpi:\t-96\n", 300 },
+        .{ "Xft.dpi:\tnan\n", 300 },
+        .{ "Xft.dpi:\t1e40\n", 300 },
+    };
+    for (cases) |case| {
+        const width = widthWithResources(case[0]);
+        if (width != case[1]) std.debug.panic("resources '{s}': expected width {} but got {}", .{ case[0], case[1], width });
+    }
 }
 
 /// The window manager's WM_DELETE_WINDOW is the app's close.
@@ -1383,6 +1493,7 @@ pub fn main(init: std.process.Init.Minimal) void {
         .{ "external destroy before pixmaps", testExternalDestroyBeforePixmaps, .{} },
         .{ "resize after a write error", testResizeAfterWriteError, .{} },
         .{ "recreate after external destroy", testRecreateAfterExternalDestroy, .{} },
+        .{ "resource database", testResourceDatabase, .{} },
         .{ "close", testClose, .{} },
         .{ "dpi change", testDpiChange, .{} },
         .{ "present next frame", testPresentNextFrame, .{} },
