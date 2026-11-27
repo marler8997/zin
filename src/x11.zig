@@ -56,20 +56,18 @@ pub const Connection = struct {
     depth: x11.Depth,
     keycode_range: if (support_key_events) x11.KeycodeRange else void,
 
-    dpi_scale: ?DpiScale,
-    keymap: if (support_key_events) ?x11.keymap.Full else void,
-    present_opcode_base: ?u8 = null,
-    /// The window manager's protocol for asking a window to close: windows
-    /// list WM_DELETE_WINDOW in their WM_PROTOCOLS, and get a ClientMessage
-    /// with it instead of being killed.
-    wm_protocols: ?x11.Atom = null,
-    wm_delete_window: ?x11.Atom = null,
-    setup_sequences: std.EnumArray(SetupRequest, ?u16),
+    state: union(enum) {
+        setup: Setup,
+        ready: Ready,
+    },
 
     // TODO: we'll need some better mechanism for ids so we can't run out
     next_id_offset: u32 = 0,
 
+    /// a GetProperty sent after setup's, when RESOURCE_MANAGER changed
     dpi_get_property_sequence: ?u16 = null,
+    /// a GetKeyboardMapping sent after setup's, when the keymap changed
+    keymap_sequence: if (support_key_events) ?u16 else void = if (support_key_events) null else {},
 
     status: enum {
         running,
@@ -82,15 +80,17 @@ pub const Connection = struct {
         error_returned,
     } = .running,
 
-    pub fn isSetupDone(conn: *const Connection) bool {
-        for (conn.setup_sequences.values) |seq| if (seq != null) return false;
-        return conn.dpi_scale != null;
-    }
-    fn setupRequestFromSequence(conn: *const Connection, sequence: u16) ?SetupRequest {
-        for (conn.setup_sequences.values, 0..) |seq, index| {
-            if (seq == sequence) return std.enums.EnumIndexer(SetupRequest).keyForIndex(index);
-        }
-        return null;
+    fn isSetupReplyPending(conn: *const Connection, request: SetupRequest) bool {
+        return switch (conn.state) {
+            .setup => |setup| {
+                var maybe_pending: ?SetupRequest = setup.next;
+                while (maybe_pending) |pending| : (maybe_pending = pending.next()) {
+                    if (pending == request) return true;
+                }
+                return false;
+            },
+            .ready => false,
+        };
     }
 
     /// Whether zin sends requests: error.WriteFailed once a write failed
@@ -336,8 +336,7 @@ pub fn connect(thread: zin.ThreadId, io: std.Io, environ: std.process.Environ, o
     } else {};
 
     // don't wait on replies here, over a remote connection each one is a round trip
-    var setup_sequences: std.EnumArray(SetupRequest, ?u16) = .initFill(null);
-    const dpi_get_property_sequence = writeFlushConnectRequests(&sink, keycode_range, &setup_sequences) catch
+    const setup_sequences = writeFlushConnectRequests(&sink, keycode_range) catch
         return out_err.set(.{ .send_error = global.i.socket_writer.err.? });
 
     global.conn = .{
@@ -346,59 +345,118 @@ pub fn connect(thread: zin.ThreadId, io: std.Io, environ: std.process.Environ, o
         .id_range = id_range,
         .depth = depth,
         .keycode_range = keycode_range,
-        .dpi_scale = if (support_dpi_events) null else .{ .val = {} },
-        .keymap = if (support_key_events) null else {},
-        .setup_sequences = setup_sequences,
-        .dpi_get_property_sequence = dpi_get_property_sequence,
+        .state = .{ .setup = .{
+            .next = .first,
+            .sequences = setup_sequences,
+            .received = .{
+                .present_opcode_base = undefined,
+                .wm_protocols = undefined,
+                .wm_delete_window = undefined,
+                .keymap = undefined,
+                .dpi_scale = if (support_dpi_events) undefined else .{ .val = {} },
+            },
+        } },
     };
     global.onConnected();
 }
 
+/// Replies to the requests connect sends, received in this order.
+const Setup = struct {
+    next: SetupRequest,
+    sequences: std.EnumArray(SetupRequest, u16),
+    /// the fields of the requests before next are set
+    received: Ready,
+};
+
+/// What zin knows once every setup reply is received.
+const Ready = struct {
+    present_opcode_base: u8,
+    /// The window manager's protocol for asking a window to close: windows
+    /// list WM_DELETE_WINDOW in their WM_PROTOCOLS, and get a ClientMessage
+    /// with it instead of being killed.
+    wm_protocols: x11.Atom,
+    wm_delete_window: x11.Atom,
+    keymap: if (support_key_events) x11.keymap.Full else void,
+    dpi_scale: DpiScale,
+};
+
+/// The requests connect sends.
 const SetupRequest = enum {
     present_extension,
     wm_protocols_atom,
     wm_delete_window_atom,
     keymap,
+    dpi,
+
+    const first: SetupRequest = .present_extension;
+    /// the request connect sends after this one
+    fn next(request: SetupRequest) ?SetupRequest {
+        return switch (request) {
+            .present_extension => .wm_protocols_atom,
+            .wm_protocols_atom => .wm_delete_window_atom,
+            .wm_delete_window_atom => if (support_key_events) .keymap else if (support_dpi_events) .dpi else null,
+            .keymap => if (support_dpi_events) .dpi else null,
+            .dpi => null,
+        };
+    }
 };
 
-/// Writes and flushes the setup requests, returns the DPI GetProperty's sequence.
+/// Writes and flushes the setup requests, returning their sequences.
 fn writeFlushConnectRequests(
     sink: *x11.RequestSink,
     keycode_range: if (support_key_events) x11.KeycodeRange else void,
-    sequences: *std.EnumArray(SetupRequest, ?u16),
-) error{WriteFailed}!?u16 {
-    try sink.QueryExtension(x11.present.name);
-    sequences.set(.present_extension, sink.sequence);
-    try sink.InternAtom(.{ .only_if_exists = false, .name = .initComptime("WM_PROTOCOLS") });
-    sequences.set(.wm_protocols_atom, sink.sequence);
-    try sink.InternAtom(.{ .only_if_exists = false, .name = .initComptime("WM_DELETE_WINDOW") });
-    sequences.set(.wm_delete_window_atom, sink.sequence);
-    if (support_key_events) {
-        try sink.GetKeyboardMapping(keycode_range.min, keycode_range.count());
-        sequences.set(.keymap, sink.sequence);
-    }
-    const dpi_get_property_sequence: ?u16 = blk: {
-        if (!support_dpi_events) break :blk null;
-        // Select PropertyChange events on the root window so we get PropertyNotify
-        // when RESOURCE_MANAGER changes (e.g. via xrdb).
-        try sink.ChangeWindowAttributes(global.i.screen.root, .{
-            .event_mask = .{ .PropertyChange = 1 },
+) error{WriteFailed}!std.EnumArray(SetupRequest, u16) {
+    var sequences: std.EnumArray(SetupRequest, u16) = .initUndefined();
+    var maybe_request: ?SetupRequest = .first;
+    while (maybe_request) |request| : (maybe_request = request.next()) {
+        sequences.set(request, switch (request) {
+            .present_extension => blk: {
+                try sink.QueryExtension(x11.present.name);
+                break :blk sink.sequence;
+            },
+            .wm_protocols_atom => blk: {
+                try sink.InternAtom(.{ .only_if_exists = false, .name = .initComptime("WM_PROTOCOLS") });
+                break :blk sink.sequence;
+            },
+            .wm_delete_window_atom => blk: {
+                try sink.InternAtom(.{ .only_if_exists = false, .name = .initComptime("WM_DELETE_WINDOW") });
+                break :blk sink.sequence;
+            },
+            .keymap => if (support_key_events) try writeGetKeyboardMapping(sink, keycode_range) else unreachable,
+            .dpi => if (support_dpi_events) blk: {
+                // Select PropertyChange events on the root window so we get PropertyNotify
+                // when RESOURCE_MANAGER changes (e.g. via xrdb).
+                try sink.ChangeWindowAttributes(global.i.screen.root, .{
+                    .event_mask = .{ .PropertyChange = 1 },
+                });
+                break :blk try sendDpiGetProperty(sink);
+            } else unreachable,
         });
-        break :blk try sendDpiGetProperty(sink);
-    };
+    }
     try sink.writer.flush();
-    return dpi_get_property_sequence;
+    return sequences;
 }
 
-fn handleSetupReply(
-    source: *x11.Source,
-    reply: x11.servermsg.Reply,
-    request: SetupRequest,
-) !void {
-    const conn = &global.conn.?;
-    std.debug.assert(conn.setup_sequences.get(request) == reply.sequence);
-    conn.setup_sequences.set(request, null);
-    switch (request) {
+fn writeGetKeyboardMapping(sink: *x11.RequestSink, keycode_range: x11.KeycodeRange) error{WriteFailed}!u16 {
+    try sink.GetKeyboardMapping(keycode_range.min, keycode_range.count());
+    return sink.sequence;
+}
+
+/// Whether a reply or error with this sequence is for the setup request zin
+/// expects next. An error for an earlier request is for one without a reply.
+fn isNextSetupSequence(setup: *const Setup, sequence: u16) error{X11UnexpectedMessage}!bool {
+    const expected = setup.sequences.get(setup.next);
+    if (sequence == expected) return true;
+    if (sequenceBefore(expected, sequence)) {
+        log.err("X11 sent a reply or error for request {} before the one for setup request {t} ({})", .{ sequence, setup.next, expected });
+        return error.X11UnexpectedMessage;
+    }
+    return false;
+}
+
+fn handleSetupReply(source: *x11.Source, reply: x11.servermsg.Reply, setup: *Setup) !void {
+    const received = &setup.received;
+    switch (setup.next) {
         .present_extension => {
             const ext_reply, _ = try source.readReplyFull(reply, .QueryExtension);
             const ext = try x11.Extension.init(ext_reply) orelse {
@@ -406,21 +464,31 @@ fn handleSetupReply(
                 return error.X11PresentNotAvailable;
             };
             log.info("extension '{s}': {}", .{ x11.present.name.nativeSlice(), ext });
-            conn.present_opcode_base = ext.opcode_base;
+            received.present_opcode_base = ext.opcode_base;
         },
         .wm_protocols_atom => {
             const atom_reply, _ = try source.readReplyFull(reply, .InternAtom);
-            conn.wm_protocols = atom_reply.atom;
+            received.wm_protocols = atom_reply.atom;
         },
         .wm_delete_window_atom => {
             const atom_reply, _ = try source.readReplyFull(reply, .InternAtom);
-            conn.wm_delete_window = atom_reply.atom;
+            received.wm_delete_window = atom_reply.atom;
         },
         .keymap => if (support_key_events) {
-            conn.keymap = try readKeymapReply(source, reply);
+            received.keymap = try readKeymapReply(source, reply);
+        } else unreachable,
+        .dpi => if (support_dpi_events) {
+            const maybe_scale = try readDpiFromPropertyReply(source, reply.flexible);
+            received.dpi_scale = .{ .val = maybe_scale orelse 1.0 };
         } else unreachable,
     }
-    try onSetupProgress();
+    setup.next = setup.next.next() orelse {
+        // copied first, setup is in the union being overwritten
+        const ready = setup.received;
+        global.conn.?.state = .{ .ready = ready };
+        log.debug("X11 setup done", .{});
+        return writeQueuedWindows();
+    };
 }
 
 fn readKeymapReply(source: *x11.Source, reply: x11.servermsg.Reply) !x11.keymap.Full {
@@ -445,12 +513,6 @@ fn readKeymapReply(source: *x11.Source, reply: x11.servermsg.Reply) !x11.keymap.
     }
     std.debug.assert(source.replyRemainingSize() == 0);
     return keymap;
-}
-
-fn onSetupProgress() error{WriteFailed}!void {
-    if (!global.conn.?.isSetupDone()) return;
-    log.debug("X11 setup done", .{});
-    try writeQueuedWindows();
 }
 
 /// in the order the app did things
@@ -512,12 +574,12 @@ fn writeQueuedWindows() error{WriteFailed}!void {
 pub fn finishSetup() !void {
     const conn = &global.conn.?;
     if (conn.status == .error_returned) @panic("the X11 connection failed, the app must disconnect");
-    if (conn.isSetupDone()) return;
+    if (conn.state == .ready) return;
     // the socket is shut down, zin won't write anything that needs setup
     if (conn.status == .quit_requested) return;
     errdefer conn.status = .error_returned;
     if (try conn.canWrite()) conn.sink.writer.flush() catch |e| return conn.teeWriteError(e);
-    while (!conn.isSetupDone()) {
+    while (conn.state != .ready) {
         const msg_kind = conn.source.readKind() catch |err| switch (err) {
             error.EndOfStream => {
                 log.err("X11 connection closed before setup was done", .{});
@@ -1049,7 +1111,7 @@ pub fn staticWindow(window_id: zin.StaticWindowId) type {
             }
             _ = try global.conn.?.canWrite();
             // the window's size depends on the DPI, .created comes once zin knows it
-            if (!global.conn.?.isSetupDone()) {
+            if (global.conn.?.state != .ready) {
                 state().* = .{ .queued = .{
                     .size = opt.size,
                     .pos = opt.pos,
@@ -1068,7 +1130,7 @@ pub fn staticWindow(window_id: zin.StaticWindowId) type {
             damaged: bool,
         ) error{WriteFailed}!void {
             const bg = global.conn.?.x11FromRgb(config.background);
-            const size = windowPixelSizeFromInit(size_init, global.conn.?.dpi_scale.?);
+            const size = windowPixelSizeFromInit(size_init, global.conn.?.state.ready.dpi_scale);
             try createWindow(&config, size, pos, bg, global.conn.?.staticWindowId(window_id), platform);
             state().* = .{ .created = .{ .size = size, .damaged = damaged } };
             if (comptime window_id.getConfig().window_size_events) global.staticWindowCustomState(window_id).client_size = size;
@@ -1274,10 +1336,10 @@ fn createWindow(
     global.conn.?.sink.ChangeProperty(
         .replace,
         id,
-        global.conn.?.wm_protocols.?,
+        global.conn.?.state.ready.wm_protocols,
         .ATOM,
         u32,
-        .init(&[_]u32{@backingInt(global.conn.?.wm_delete_window.?)}, 1),
+        .init(&[_]u32{@backingInt(global.conn.?.state.ready.wm_delete_window)}, 1),
     ) catch |e| return global.conn.?.teeWriteError(e);
     global.conn.?.sink.CreateGc(
         gcFromWindow(id),
@@ -1408,7 +1470,7 @@ fn drawStaticWindow(comptime window_id: zin.StaticWindowId) error{WriteFailed}!e
 
     if (created.presenter == null) {
         created.presenter = .{
-            .opcode_base = global.conn.?.present_opcode_base.?,
+            .opcode_base = global.conn.?.state.ready.present_opcode_base,
             .depth = global.conn.?.depth,
             .window_id = window,
             .event_id = global.conn.?.staticWindowPresentEventId(window_id),
@@ -1659,13 +1721,20 @@ pub fn x11HandleMessage(source: *x11.Source, msg_kind: x11.ServerMsgKind) !void 
         .Error => {
             const err = try source.read2(.Error);
             defer onServerSequence(err.sequence);
-            if (global.conn.?.setupRequestFromSequence(err.sequence)) |request| {
-                log.err("X11 setup request {t} failed: {f}", .{ request, err });
-                return error.X11SetupRequestFailed;
+            switch (global.conn.?.state) {
+                .setup => |*setup| if (try isNextSetupSequence(setup, err.sequence)) {
+                    log.err("X11 setup request {t} failed: {f}", .{ setup.next, err });
+                    return error.X11SetupRequestFailed;
+                },
+                .ready => {},
+            }
+            if (support_key_events and global.conn.?.keymap_sequence == err.sequence) {
+                log.err("X11 GetKeyboardMapping failed: {f}", .{err});
+                return error.X11GetKeymapFailed;
             }
             if (support_dpi_events and global.conn.?.dpi_get_property_sequence == err.sequence) {
                 log.err("X11 GetProperty RESOURCE_MANAGER (for the DPI) failed: {f}", .{err});
-                return if (global.conn.?.dpi_scale == null) error.X11SetupRequestFailed else error.X11GetDpiFailed;
+                return error.X11GetDpiFailed;
             }
             // only these errors name a resource in generic
             const resource_error = switch (err.code) {
@@ -1694,21 +1763,30 @@ pub fn x11HandleMessage(source: *x11.Source, msg_kind: x11.ServerMsgKind) !void 
             const reply = try source.read2(.Reply);
             onServerSequence(reply.sequence);
 
-            if (global.conn.?.setupRequestFromSequence(reply.sequence)) |request| {
-                return handleSetupReply(source, reply, request);
+            switch (global.conn.?.state) {
+                .setup => |*setup| {
+                    if (try isNextSetupSequence(setup, reply.sequence)) return handleSetupReply(source, reply, setup);
+                    // the app can't send requests until setup is done
+                    log.err("X11 sent a reply for request {} but setup request {t} ({}) is next", .{ reply.sequence, setup.next, setup.sequences.get(setup.next) });
+                    return error.X11UnexpectedMessage;
+                },
+                .ready => {},
             }
 
+            if (support_key_events and global.conn.?.keymap_sequence == reply.sequence) {
+                global.conn.?.keymap_sequence = null;
+                global.conn.?.state.ready.keymap = try readKeymapReply(source, reply);
+                return;
+            }
             if (support_dpi_events) {
                 if (global.conn.?.dpi_get_property_sequence) |seq| {
                     if (reply.sequence == seq) {
                         global.conn.?.dpi_get_property_sequence = null;
                         const maybe_scale = try readDpiFromPropertyReply(source, reply.flexible);
-                        const old = global.conn.?.dpi_scale orelse {
-                            global.conn.?.dpi_scale = .{ .val = maybe_scale orelse 1.0 };
-                            return onSetupProgress();
-                        };
+                        const ready = &global.conn.?.state.ready;
+                        const old = ready.dpi_scale;
                         if (maybe_scale) |scale| {
-                            global.conn.?.dpi_scale = .{ .val = scale };
+                            ready.dpi_scale = .{ .val = scale };
                             if (old.val != scale) {
                                 inline for (comptime std.meta.tags(zin.StaticWindowId)) |window_id| {
                                     if (global.conn.?.status == .quit_requested) return;
@@ -1746,7 +1824,7 @@ pub fn x11HandleMessage(source: *x11.Source, msg_kind: x11.ServerMsgKind) !void 
             const w = eventWindow(event.event) orelse return;
             switch (w) {
                 inline else => |window_id| if (window_id.getConfig().key_events) {
-                    if (global.conn.?.keymap.?.getKeysym(event.keycode, event.state.mod())) |keysym| {
+                    if (global.conn.?.state.ready.keymap.getKeysym(event.keycode, event.state.mod())) |keysym| {
                         staticCallback(window_id)(.{ .key = keyFromX11(
                             if (kind == .KeyPress) .down else .up,
                             event.keycode,
@@ -1842,7 +1920,28 @@ pub fn x11HandleMessage(source: *x11.Source, msg_kind: x11.ServerMsgKind) !void 
             const w = eventWindow(event.window) orelse return;
             global.static_window_states[@backingInt(w)].created.damaged = true;
         },
-        .MappingNotify,
+        .MappingNotify => {
+            const event = try readEvent(source, .MappingNotify);
+            if (!support_key_events) return;
+            switch (event.request) {
+                .keyboard => {
+                    const conn = &global.conn.?;
+                    // The server sends replies and events in the order it
+                    // handles them, so a GetKeyboardMapping still pending was
+                    // handled after this change and its reply has the new map.
+                    if (conn.isSetupReplyPending(.keymap) or conn.keymap_sequence != null) return;
+                    if (!try conn.canWrite()) return;
+                    conn.keymap_sequence = writeGetKeyboardMapping(&conn.sink, conn.keycode_range) catch |e|
+                        return conn.teeWriteError(e);
+                },
+                // zin doesn't use these maps
+                .modifier, .pointer => {},
+                _ => {
+                    log.err("X11 MappingNotify has unknown request {}", .{@backingInt(event.request)});
+                    return error.X11UnexpectedMessage;
+                },
+            }
+        },
         .UnmapNotify,
         .MapNotify,
         .ReparentNotify,
@@ -1867,7 +1966,7 @@ pub fn x11HandleMessage(source: *x11.Source, msg_kind: x11.ServerMsgKind) !void 
             const event = try readEvent(source, .ClientMessage);
             const w = eventWindow(event.window) orelse return;
             const protocol = std.mem.readInt(u32, event.data[0..4], builtin.cpu.arch.endian());
-            if (event.format == 32 and event.type == global.conn.?.wm_protocols.? and protocol == @backingInt(global.conn.?.wm_delete_window.?)) {
+            if (event.format == 32 and event.type == global.conn.?.state.ready.wm_protocols and protocol == @backingInt(global.conn.?.state.ready.wm_delete_window)) {
                 switch (w) {
                     inline else => |window_id| staticCallback(window_id)(.close),
                 }
@@ -1889,10 +1988,13 @@ pub fn x11HandleMessage(source: *x11.Source, msg_kind: x11.ServerMsgKind) !void 
         .GenericEvent => {
             const event = try source.read2(.GenericEvent);
             onServerSequence(event.sequence);
-            const present_opcode_base = global.conn.?.present_opcode_base orelse {
-                log.err("GenericEvent ext_opcode={} type={} before the Present extension is known", .{ event.ext_opcode_base, event.type });
-                try source.discardRemaining();
-                return error.X11UnexpectedMessage;
+            const present_opcode_base = switch (global.conn.?.state) {
+                .setup => {
+                    log.err("GenericEvent ext_opcode={} type={} before the Present extension is known", .{ event.ext_opcode_base, event.type });
+                    try source.discardRemaining();
+                    return error.X11UnexpectedMessage;
+                },
+                .ready => |*ready| ready.present_opcode_base,
             };
             if (event.isPresentCompleteNotify(present_opcode_base)) {
                 const complete = try source.read3Full(.present_CompleteNotify);
@@ -1920,7 +2022,7 @@ pub fn x11HandleMessage(source: *x11.Source, msg_kind: x11.ServerMsgKind) !void 
                     // The server sends replies and events in the order it
                     // handles them, so a GetProperty still pending was handled
                     // after this change and its reply already has the new value.
-                    if (global.conn.?.dpi_get_property_sequence != null) return;
+                    if (global.conn.?.isSetupReplyPending(.dpi) or global.conn.?.dpi_get_property_sequence != null) return;
                     if (!try global.conn.?.canWrite()) return;
                     global.conn.?.dpi_get_property_sequence = sendDpiGetProperty(&global.conn.?.sink) catch |e|
                         return global.conn.?.teeWriteError(e);
@@ -1987,7 +2089,7 @@ pub fn Draw(window_id: zin.StaticWindowId) type {
         pub fn getDpiScale(self: *const Self) zin.XY(f32) {
             _ = self;
             if (!support_dpi_events) @compileError("cannot call getDpiScale without setting dpi_events to true");
-            const dpi_scale = global.conn.?.dpi_scale.?;
+            const dpi_scale = global.conn.?.state.ready.dpi_scale;
             return .{ .x = dpi_scale.val, .y = dpi_scale.val };
         }
 
