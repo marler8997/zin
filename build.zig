@@ -119,6 +119,7 @@ const x11_panic_cases: []const [2][]const u8 = &.{
     .{ "panic-show-after-failure", "the X11 connection failed, the app must disconnect" },
     .{ "panic-get-client-size-before-created", "getClientSize called before the window's .created callback" },
     .{ "panic-error-after-app-destroy-race", "Unhandled X11 Error" },
+    .{ "panic-setup-error-without-reply", "Unhandled X11 Error" },
 };
 
 fn addExample(

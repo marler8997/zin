@@ -108,6 +108,7 @@ const callback_log = struct {
 var on_draw_a: ?*const fn (DrawA) void = null;
 var on_timer_a: ?*const fn () void = null;
 var on_close_a: ?*const fn () void = null;
+var last_key_a: ?zin.Key = null;
 const DrawA = @FieldType(zin.Callback(.a), "draw");
 fn callbackA(cb: zin.Callback(.a)) void {
     switch (cb) {
@@ -130,7 +131,10 @@ fn callbackA(cb: zin.Callback(.a)) void {
         .close => .{ .close = .a },
         .draw => .{ .draw = .a },
         .window_size => |size| .{ .window_size = .{ .a, size } },
-        .key => .{ .key = .a },
+        .key => |key| blk: {
+            last_key_a = key;
+            break :blk .{ .key = .a };
+        },
         .mouse => .{ .mouse = .a },
         .timer => .{ .timer = .a },
         .dpi_change => .{ .dpi_change = .a },
@@ -454,6 +458,27 @@ const FakeServer = struct {
             .{ .offset = 30, .value = .{ .u8 = 1 } },
         });
     }
+    fn mappingNotify(server: *FakeServer, sequence: u16, request: enum(u8) { modifier, keyboard, pointer, _ }) void {
+        server.event(34, sequence, &.{
+            .{ .offset = 4, .value = .{ .u8 = @backingInt(request) } },
+            .{ .offset = 5, .value = .{ .u8 = min_keycode } },
+            .{ .offset = 6, .value = .{ .u8 = max_keycode - min_keycode + 1 } },
+        });
+    }
+    /// Replies to a GetKeyboardMapping, `keysym_a` is keycode_a's first
+    /// keysym. Real servers send 7 per keycode.
+    fn replyKeymap(server: *FakeServer, sequence: u16, keysym_a: u32, per_keycode: u8) void {
+        var keysyms: [(max_keycode - min_keycode + 1) * 7]u32 = @splat(0);
+        keysyms[(keycode_a - min_keycode) * @as(usize, per_keycode)] = keysym_a;
+        const count = (max_keycode - min_keycode + 1) * @as(usize, per_keycode);
+        server.reply(sequence, per_keycode, @splat(0), std.mem.sliceAsBytes(keysyms[0..count]));
+    }
+    /// Checks a GetKeyboardMapping asks for every keycode.
+    fn expectGetKeymap(request: Request) void {
+        expectEq(u8, request.opcode, Opcode.GetKeyboardMapping);
+        expectEq(u8, request.bytes[4], min_keycode);
+        expectEq(u8, request.bytes[5], max_keycode - min_keycode + 1);
+    }
     fn deleteWindow(server: *FakeServer, sequence: u16, window: u32) void {
         server.event(33, sequence, &.{
             .{ .offset = 1, .value = .{ .u8 = 32 } },
@@ -483,8 +508,15 @@ const FakeServer = struct {
         /// the reply says its value is this much longer than it is
         resources_overstated: u32 = 0,
     }) void {
+        server.replySetupBeforeKeymap(requests, opt.present);
+        server.replyKeymap(requests[3].sequence, 'a', 1);
+        if (opt.resources) |resources| {
+            server.replyResources(requests[5].sequence, resources, opt.resources_overstated);
+        } else server.replyDpi(requests[5].sequence, opt.dpi);
+    }
+    fn replySetupBeforeKeymap(server: *FakeServer, requests: *const [6]Request, present: bool) void {
         var body: [24]u8 = @splat(0);
-        body[0] = @intFromBool(opt.present);
+        body[0] = @intFromBool(present);
         body[1] = present_opcode;
         server.reply(requests[0].sequence, 0, body, &.{});
         body = @splat(0);
@@ -492,12 +524,6 @@ const FakeServer = struct {
         server.reply(requests[1].sequence, 0, body, &.{});
         std.mem.writeInt(u32, body[0..4], atom_wm_delete_window, .little);
         server.reply(requests[2].sequence, 0, body, &.{});
-        var keysyms: [max_keycode - min_keycode + 1]u32 = @splat(0);
-        keysyms[keycode_a - min_keycode] = 'a';
-        server.reply(requests[3].sequence, 1, @splat(0), std.mem.sliceAsBytes(&keysyms));
-        if (opt.resources) |resources| {
-            server.replyResources(requests[5].sequence, resources, opt.resources_overstated);
-        } else server.replyDpi(requests[5].sequence, opt.dpi);
     }
     /// Replies to a GetProperty RESOURCE_MANAGER with this database.
     fn replyResources(server: *FakeServer, sequence: u16, value: []const u8, overstated: u32) void {
@@ -572,7 +598,7 @@ fn connectReady(server: *FakeServer, opt: struct { dpi: u32 = 96 }) void {
     const requests = server.expectSetupRequests();
     server.replySetup(&requests, .{ .dpi = opt.dpi });
     clientHandle(5);
-    std.debug.assert(conn().isSetupDone());
+    std.debug.assert(conn().state == .ready);
 }
 fn disconnect(server: *FakeServer) void {
     zin.x11Disconnect(.main);
@@ -908,7 +934,7 @@ fn widthWithResources(resources: []const u8) u16 {
     const setup_requests = server.expectSetupRequests();
     server.replySetup(&setup_requests, .{ .resources = resources });
     clientHandle(5);
-    std.debug.assert(conn().isSetupDone());
+    std.debug.assert(conn().state == .ready);
     // zin read all of the reply
     server.keyPress(setup_requests[5].sequence, root_window);
     clientHandle(1);
@@ -986,6 +1012,74 @@ fn testResourceDatabase() void {
     }
 }
 
+/// zin reads the keymap again when it changes.
+fn testKeymapChange() void {
+    var server: FakeServer = undefined;
+    // during setup, the setup GetKeyboardMapping's reply has the new map
+    connect(&server);
+    const setup_requests = server.expectSetupRequests();
+    FakeServer.expectGetKeymap(setup_requests[3]);
+    server.mappingNotify(0, .keyboard);
+    clientHandle(1);
+    clientFlush();
+    server.expectNoRequests();
+    server.replySetup(&setup_requests, .{});
+    clientHandle(5);
+    const create = createAndExpect(&server, .a);
+    last_key_a = null;
+    server.keyPress(create.sequence, windowXid(.a));
+    clientHandle(1);
+    expectEq(u32, @backingInt(last_key_a.?.vk), 'a');
+
+    // the modifier and pointer maps aren't used
+    server.mappingNotify(create.sequence, .modifier);
+    server.mappingNotify(create.sequence, .pointer);
+    clientHandle(2);
+    clientFlush();
+    server.expectNoRequests();
+
+    server.mappingNotify(create.sequence, .keyboard);
+    clientHandle(1);
+    clientFlush();
+    const get = server.expectRequests(&.{Opcode.GetKeyboardMapping})[0];
+    FakeServer.expectGetKeymap(get);
+    // a change while the reply is pending is in the reply
+    server.mappingNotify(create.sequence, .keyboard);
+    clientHandle(1);
+    clientFlush();
+    server.expectNoRequests();
+    server.replyKeymap(get.sequence, 'b', 7);
+    clientHandle(1);
+
+    last_key_a = null;
+    server.keyPress(get.sequence, windowXid(.a));
+    clientHandle(1);
+    expectEq(u32, @backingInt(last_key_a.?.vk), 'b');
+
+    // a change after a write failed
+    conn().status = .write_failed;
+    server.mappingNotify(get.sequence, .keyboard);
+    const write_failed_kind = conn().source.readKind() catch |err| std.debug.panic("readKind failed with {t}", .{err});
+    expectError(error.WriteFailed, zin.platform.x11HandleMessage(&conn().source, write_failed_kind));
+    conn().status = .running;
+
+    // a failed GetKeyboardMapping
+    server.mappingNotify(get.sequence, .keyboard);
+    clientHandle(1);
+    clientFlush();
+    const failed = server.expectRequests(&.{Opcode.GetKeyboardMapping})[0];
+    server.xerror(2, failed.sequence, 0, Opcode.GetKeyboardMapping); // BadValue
+    const kind = conn().source.readKind() catch |err| std.debug.panic("readKind failed with {t}", .{err});
+    expectError(error.X11GetKeymapFailed, zin.platform.x11HandleMessage(&conn().source, kind));
+
+    // a request value zin doesn't know
+    server.mappingNotify(failed.sequence, @fromBackingInt(@intCast(3)));
+    const kind2 = conn().source.readKind() catch |err| std.debug.panic("readKind failed with {t}", .{err});
+    expectError(error.X11UnexpectedMessage, zin.platform.x11HandleMessage(&conn().source, kind2));
+    zin.staticWindow(.a).destroy();
+    disconnect(&server);
+}
+
 /// The window manager's WM_DELETE_WINDOW is the app's close.
 fn testClose() void {
     var server: FakeServer = undefined;
@@ -1014,6 +1108,15 @@ fn testDpiChange() void {
     server.replyDpi(get.sequence, 192);
     clientHandle(1);
     callback_log.expect(&.{.{ .dpi_change = .a }});
+
+    // a failed GetProperty
+    server.propertyNotifyResourceManager(get.sequence);
+    clientHandle(1);
+    clientFlush();
+    const failed = server.expectRequests(&.{Opcode.GetProperty})[0];
+    server.xerror(2, failed.sequence, 0, Opcode.GetProperty); // BadValue
+    const kind = conn().source.readKind() catch |err| std.debug.panic("readKind failed with {t}", .{err});
+    expectError(error.X11GetDpiFailed, zin.platform.x11HandleMessage(&conn().source, kind));
     zin.staticWindow(.a).destroy();
     zin.staticWindow(.b).destroy();
     disconnect(&server);
@@ -1104,7 +1207,8 @@ fn testNoWritesAfterQuitOrWriteFailure() void {
     zin.staticWindow(.a).invalidate();
     clientUpdate();
     server.propertyNotifyResourceManager(create.sequence);
-    clientHandle(1);
+    server.mappingNotify(create.sequence, .keyboard);
+    clientHandle(2);
     // and the app gets no more callbacks
     callback_log.clear();
     server.configureNotify(create.sequence, windowXid(.a), 50, 50);
@@ -1267,6 +1371,91 @@ fn testSetupErrors() void {
         expectError(error.X11PresentNotAvailable, zin.mainLoop());
         disconnect(&server);
     }
+    {
+        var server: FakeServer = undefined;
+        connect(&server);
+        const requests = server.expectSetupRequests();
+        server.replySetupBeforeKeymap(&requests, true);
+        server.xerror(2, requests[3].sequence, 0, Opcode.GetKeyboardMapping); // BadValue
+        expectError(error.X11SetupRequestFailed, zin.mainLoop());
+        disconnect(&server);
+    }
+    {
+        var server: FakeServer = undefined;
+        connect(&server);
+        const requests = server.expectSetupRequests();
+        server.replySetupBeforeKeymap(&requests, true);
+        server.replyKeymap(requests[3].sequence, 'a', 1);
+        server.xerror(2, requests[5].sequence, 0, Opcode.GetProperty); // BadValue
+        expectError(error.X11SetupRequestFailed, zin.mainLoop());
+        disconnect(&server);
+    }
+}
+
+/// A change during setup needs no request while setup's request for it is
+/// pending, since its reply comes after the change.
+fn testChangesDuringSetup() void {
+    var server: FakeServer = undefined;
+    connect(&server);
+    const requests = server.expectSetupRequests();
+    server.replySetupBeforeKeymap(&requests, true);
+    server.mappingNotify(requests[2].sequence, .keyboard);
+    server.propertyNotifyResourceManager(requests[2].sequence);
+    clientHandle(5);
+    clientFlush();
+    server.expectNoRequests();
+
+    // after setup's keymap reply, a change needs a new request
+    server.replyKeymap(requests[3].sequence, 'a', 1);
+    server.mappingNotify(requests[3].sequence, .keyboard);
+    server.propertyNotifyResourceManager(requests[3].sequence);
+    clientHandle(3);
+    clientFlush();
+    const get = server.expectRequests(&.{Opcode.GetKeyboardMapping})[0];
+    server.replyDpi(requests[5].sequence, 96);
+    server.replyKeymap(get.sequence, 'b', 1);
+    clientHandle(2);
+    std.debug.assert(conn().state == .ready);
+    const create = createAndExpect(&server, .a);
+    last_key_a = null;
+    server.keyPress(create.sequence, windowXid(.a));
+    clientHandle(1);
+    expectEq(u32, @backingInt(last_key_a.?.vk), 'b');
+    zin.staticWindow(.a).destroy();
+    disconnect(&server);
+}
+
+/// The server answers requests in order, so a setup reply or error that
+/// skips one is a protocol error.
+fn testSetupOutOfOrder() void {
+    {
+        var server: FakeServer = undefined;
+        connect(&server);
+        const requests = server.expectSetupRequests();
+        server.replySetupBeforeKeymap(&requests, true);
+        server.replyDpi(requests[5].sequence, 96);
+        expectError(error.X11UnexpectedMessage, zin.mainLoop());
+        disconnect(&server);
+    }
+    {
+        var server: FakeServer = undefined;
+        connect(&server);
+        const requests = server.expectSetupRequests();
+        server.xerror(2, requests[3].sequence, 0, Opcode.GetKeyboardMapping); // BadValue
+        expectError(error.X11UnexpectedMessage, zin.mainLoop());
+        disconnect(&server);
+    }
+    {
+        var server: FakeServer = undefined;
+        connect(&server);
+        const requests = server.expectSetupRequests();
+        server.replySetupBeforeKeymap(&requests, true);
+        server.replyKeymap(requests[3].sequence, 'a', 1);
+        // ChangeWindowAttributes has no reply
+        server.reply(requests[4].sequence, 0, @splat(0), &.{});
+        expectError(error.X11UnexpectedMessage, zin.mainLoop());
+        disconnect(&server);
+    }
 }
 
 /// The raw access functions create the queued windows first, so a request
@@ -1314,11 +1503,15 @@ fn runPanicCase(name: []const u8) void {
         @"panic-show-after-failure",
         @"panic-get-client-size-before-created",
         @"panic-error-after-app-destroy-race",
+        @"panic-setup-error-without-reply",
     };
     const case = std.meta.stringToEnum(Case, name) orelse std.debug.panic("unknown case '{s}'", .{name});
     var server: FakeServer = undefined;
     switch (case) {
-        .@"panic-main-loop-after-setup-failed", .@"panic-get-client-size-before-created" => connect(&server),
+        .@"panic-main-loop-after-setup-failed",
+        .@"panic-get-client-size-before-created",
+        .@"panic-setup-error-without-reply",
+        => connect(&server),
         else => connectReady(&server, .{}),
     }
     switch (case) {
@@ -1435,6 +1628,14 @@ fn runPanicCase(name: []const u8) void {
             clientHandle(1);
         },
         // only Window, Pixmap, Drawable and GC errors name a resource
+        // an error for a setup request without a reply isn't a setup reply
+        .@"panic-setup-error-without-reply" => {
+            const requests = server.expectSetupRequests();
+            server.replySetupBeforeKeymap(&requests, true);
+            server.replyKeymap(requests[3].sequence, 'a', 1);
+            server.xerror(3, requests[4].sequence, root_window, Opcode.ChangeWindowAttributes); // BadWindow
+            clientHandle(5);
+        },
         .@"panic-error-not-naming-resource" => {
             const create = createAndExpect(&server, .a);
             zin.staticWindow(.a).destroy();
@@ -1494,6 +1695,7 @@ pub fn main(init: std.process.Init.Minimal) void {
         .{ "resize after a write error", testResizeAfterWriteError, .{} },
         .{ "recreate after external destroy", testRecreateAfterExternalDestroy, .{} },
         .{ "resource database", testResourceDatabase, .{} },
+        .{ "keymap change", testKeymapChange, .{} },
         .{ "close", testClose, .{} },
         .{ "dpi change", testDpiChange, .{} },
         .{ "present next frame", testPresentNextFrame, .{} },
@@ -1506,6 +1708,8 @@ pub fn main(init: std.process.Init.Minimal) void {
         .{ "events for unknown windows are ignored", testEventsForUnknownWindowsAreIgnored, .{} },
         .{ "connection closed", testConnectionClosed, .{} },
         .{ "setup errors", testSetupErrors, .{} },
+        .{ "setup out of order", testSetupOutOfOrder, .{} },
+        .{ "changes during setup", testChangesDuringSetup, .{} },
         .{ "raw access finishes setup", testRawAccessFinishesSetup, .{} },
     };
     inline for (scenarios) |scenario| {
